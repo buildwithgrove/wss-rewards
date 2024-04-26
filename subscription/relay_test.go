@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
-	"time"
 
 	"github.com/pokt-foundation/pocket-go/provider"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
@@ -103,7 +102,6 @@ func generateRandomWSMetadata(n int) []messenger.WSMetadata {
 	}
 
 	metadata := make([]messenger.WSMetadata, n)
-	rand.Seed(time.Now().UnixNano())
 	for i := 0; i < n; i++ {
 		metadata[i] = messenger.WSMetadata{
 			Node:      nodes[rand.Intn(len(nodes))],

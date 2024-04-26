@@ -2,7 +2,6 @@ package messenger
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -238,18 +237,18 @@ func (m *subscriber) Close() {
 	m.natsConn.Close()
 }
 
-func subscribeToSubject[T any](channel chan T, queue_group string, subject string, nats messaging.NatsServer) error {
-	natsConn := nats.GetEncodedConnection()
+// func subscribeToSubject[T any](channel chan T, queue_group string, subject string, nats messaging.NatsServer) error {
+// 	natsConn := nats.GetEncodedConnection()
 
-	var err error
-	if queue_group == "" {
-		_, err = natsConn.BindRecvChan(subject, channel)
-	} else {
-		_, err = natsConn.BindRecvQueueChan(subject, queue_group, channel)
-	}
+// 	var err error
+// 	if queue_group == "" {
+// 		_, err = natsConn.BindRecvChan(subject, channel)
+// 	} else {
+// 		_, err = natsConn.BindRecvQueueChan(subject, queue_group, channel)
+// 	}
 
-	if err != nil {
-		return fmt.Errorf("subscribe to subject %s in queue group %s: %w", subject, queue_group, err)
-	}
-	return nil
-}
+// 	if err != nil {
+// 		return fmt.Errorf("subscribe to subject %s in queue group %s: %w", subject, queue_group, err)
+// 	}
+// 	return nil
+// }
