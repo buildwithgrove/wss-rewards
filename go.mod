@@ -7,6 +7,7 @@ replace github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alp
 replace github.com/pokt-network/smt => github.com/pokt-network/smt v0.9.3-0.20240321060129-e3dbbbd9f97d
 
 require (
+	github.com/dgraph-io/badger v1.6.2
 	github.com/nats-io/nats.go v1.31.0
 	github.com/pokt-foundation/pocket-go v0.17.0
 	github.com/pokt-foundation/portal-http-db/v2 v2.15.0
@@ -37,6 +38,7 @@ require (
 	filippo.io/edwards25519 v1.0.0 // indirect
 	github.com/99designs/go-keychain v0.0.0-20191008050251-8e49817e8af4 // indirect
 	github.com/99designs/keyring v1.2.1 // indirect
+	github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96 // indirect
 	github.com/DataDog/datadog-go v3.2.0+incompatible // indirect
 	github.com/DataDog/zstd v1.5.5 // indirect
 	github.com/athanorlabs/go-dleq v0.1.0 // indirect
