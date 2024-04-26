@@ -2,10 +2,8 @@ package messenger
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -14,7 +12,6 @@ import (
 	"github.com/pokt-foundation/utils-go/logger"
 
 	"github.com/pokt-foundation/portal-middleware/messaging"
-	"github.com/pokt-foundation/portal-middleware/metrics"
 	"github.com/pokt-foundation/portal-middleware/node"
 )
 
@@ -137,26 +134,23 @@ func (m *subscriber) startRelayUnmarshaller() {
 	for {
 		bytes := <-m.relaysBytesChan
 
-		// TODO - remove this if block when we are confident in D2
-		// This if statement sets the % of relays forwarded on from total received from Gateway
-		if rand.Intn(100) <= m.relayForwardPercentage {
-			var r WSMetadata
-			if err := json.Unmarshal(bytes, &r); err != nil {
-				m.MetricsReporter.RelayUnmarshalFailed(len(bytes))
-				m.logger.Error("error unmarshalling", slog.Int("message length", len(bytes)), slog.String("error", err.Error()))
-				continue
-			}
-			select {
+		var r WSMetadata
+		if err := json.Unmarshal(bytes, &r); err != nil {
+			m.MetricsReporter.RelayUnmarshalFailed(len(bytes))
+			m.logger.Error("error unmarshalling", slog.Int("message length", len(bytes)), slog.String("error", err.Error()))
+			continue
+		}
 
-			case m.relaysChan <- r:
-				m.MetricsReporter.RelayReceivedFromGateway(r)
-				continue
+		select {
 
-			default:
-				m.MetricsReporter.RelaysChanFull(r)
-				m.logger.Error("relays channel full, dropping relay", slog.String("chain", string(r.ChainID)))
-				continue
-			}
+		case m.relaysChan <- r:
+			m.MetricsReporter.RelayReceivedFromGateway(r)
+			continue
+
+		default:
+			m.MetricsReporter.RelaysChanFull(r)
+			m.logger.Error("relays channel full, dropping relay", slog.String("chain", string(r.ChainID)))
+			continue
 		}
 	}
 }
@@ -212,7 +206,6 @@ func (s *subscriber) startRelaySubscription() {
 	}
 }
 
-// TODO: cover with unit tests
 func (s *subscriber) startSessionSubscription() {
 	sub, err := s.natsConn.GetConnection().QueueSubscribe(sessionsSubject, s.queueGroupSession, func(msg *nats.Msg) {
 		select {
@@ -239,22 +232,6 @@ func (s *subscriber) RelaysChannel() <-chan WSMetadata {
 
 func (s *subscriber) SessionsChannel() <-chan provider.Session {
 	return s.sessionsChan
-}
-
-// TOOD: Relay samples can be calculated from the Relays channgel.
-// Remove the dependency on this and change the method to return not implemented error
-// to continue adhering to the interface
-func (m *subscriber) SubscribeToRelaySamples(channel chan metrics.Sample) error {
-	return subscribeToSubject(channel, "", relaySamplesSubject, m.natsConn)
-}
-
-// TODO: remove after updating the signature in middleware repo
-func (m *subscriber) SubscribeToSessions(_ chan provider.Session) error {
-	return nil
-}
-
-func (m *subscriber) SubscribeToThroughput(channel chan metrics.ThroughputReport) error {
-	return errors.New("method not implemented")
 }
 
 func (m *subscriber) Close() {
