@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -14,25 +15,32 @@ import (
 
 const retries = 3
 
+// TODO - move to cache
+var (
+	ErrNodeIDRequired      = errors.New("node ID is required")
+	ErrChainIDRequired     = errors.New("chain ID is required")
+	ErrPortalAppIDRequired = errors.New("portal app ID is required")
+)
+
 type (
 	RelaySubscriber struct {
 		relayCh    <-chan messenger.WSMetadata
 		relayBatch []messenger.WSMetadata
-		cache      cache
+		cache      ICache
 		batchSize  int16
 		mu         *sync.Mutex
 		logger     *slog.Logger
 	}
 
 	RelaySubscriberConfig struct {
-		Cache     cache
+		Cache     ICache
 		BatchSize int16
 		Mutex     *sync.Mutex
 		Logger    *logger.Logger
 	}
 
-	cache interface {
-		WriteRelays(map[NodeKey]int64) error
+	ICache interface {
+		SetWSRelays(map[NodeKey]int64) error
 	}
 
 	// TODO - move to cache
@@ -51,6 +59,20 @@ func (k *NodeKey) ComposeKey() string {
 // TODO - move to cache
 func (k *NodeKey) DecomposeKey() (node.ID, types.RelayChainID, types.PortalAppID) {
 	return k.NodeID, k.ChainID, k.PortalAppID
+}
+
+// TODO - move to cache
+func (k *NodeKey) Validate() error {
+	if k.NodeID == "" {
+		return ErrNodeIDRequired
+	}
+	if k.ChainID == "" {
+		return ErrChainIDRequired
+	}
+	if k.PortalAppID == "" {
+		return ErrPortalAppIDRequired
+	}
+	return nil
 }
 
 func NewRelaySubscriber(config RelaySubscriberConfig) (*RelaySubscriber, error) {
@@ -82,7 +104,7 @@ func (rs *RelaySubscriber) Process(ctx context.Context) {
 		if batchFull {
 			var err error
 			for attempt := 0; attempt < retries; attempt++ {
-				if err = rs.persistDailyRelays(); err == nil {
+				if err = rs.persistWSRelays(); err == nil {
 					break
 				}
 			}
@@ -90,12 +112,13 @@ func (rs *RelaySubscriber) Process(ctx context.Context) {
 				rs.logger.Error(fmt.Sprintf("cache write failed after %d retries: %s", retries, err.Error()))
 			}
 
+			// Clear the batch
 			rs.relayBatch = rs.relayBatch[:0]
 		}
 	}
 }
 
-func (rs *RelaySubscriber) persistDailyRelays() error {
+func (rs *RelaySubscriber) persistWSRelays() error {
 	relayMap := make(map[NodeKey]int64)
 
 	for _, relay := range rs.relayBatch {
@@ -104,14 +127,23 @@ func (rs *RelaySubscriber) persistDailyRelays() error {
 			ChainID:     relay.ChainID,
 			PortalAppID: relay.PortalApp.ID,
 		}
+
+		if err := key.Validate(); err != nil {
+			rs.logger.Error(fmt.Sprintf("invalid node key: %s", err.Error()))
+			continue
+		}
+
 		relayMap[key] += 1
 	}
 
-	err := rs.cache.WriteRelays(relayMap)
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	err := rs.cache.SetWSRelays(relayMap)
 	if err != nil {
 		return fmt.Errorf("error persisting relays: %w", err)
 	} else {
-		rs.logger.Info(fmt.Sprintf("%d relays persisted", len(rs.relayBatch)), slog.String("db", "badger"))
+		rs.logger.Info(fmt.Sprintf("%d relays persisted", len(rs.relayBatch)))
 	}
 
 	return nil

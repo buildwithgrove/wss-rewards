@@ -7,7 +7,6 @@ replace github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alp
 replace github.com/pokt-network/smt => github.com/pokt-network/smt v0.9.3-0.20240321060129-e3dbbbd9f97d
 
 require (
-	github.com/google/go-cmp v0.6.0
 	github.com/nats-io/nats.go v1.31.0
 	github.com/pokt-foundation/pocket-go v0.17.0
 	github.com/pokt-foundation/portal-http-db/v2 v2.15.0
@@ -106,6 +105,7 @@ require (
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/btree v1.1.2 // indirect
 	github.com/google/flatbuffers v2.0.0+incompatible // indirect
+	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/orderedcode v0.0.1 // indirect
 	github.com/google/s2a-go v0.1.7 // indirect
 	github.com/google/uuid v1.4.0 // indirect
