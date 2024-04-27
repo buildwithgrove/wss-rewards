@@ -78,12 +78,25 @@ func nodeKeyFromString(s string) (NodeKey, error) {
 	return nodeKey, nil
 }
 
-func (a AllWSRelays) Chains() []types.RelayChainID {
-	chains := make([]types.RelayChainID, 0, len(a))
+func (a AllWSRelays) Nodes() map[node.ID]struct{} {
+	nodes := make(map[node.ID]struct{})
 	for nodeKey := range a {
-		chains = append(chains, nodeKey.ChainID)
+		nodes[nodeKey.NodeID] = struct{}{}
+	}
+	return nodes
+}
+
+func (a AllWSRelays) Chains() map[types.RelayChainID]struct{} {
+	chains := make(map[types.RelayChainID]struct{})
+	for nodeKey := range a {
+		chains[nodeKey.ChainID] = struct{}{}
 	}
 	return chains
+}
+
+func (a AllWSRelays) HasChain(chainID types.RelayChainID) bool {
+	_, ok := a.Chains()[chainID]
+	return ok
 }
 
 func NewCache(config Config) (*Cache, error) {
@@ -121,7 +134,6 @@ func (c *Cache) GetAllWSRelays() (AllWSRelays, error) {
 
 			err = item.Value(func(val []byte) error {
 				count := int64(binary.BigEndian.Uint64(val))
-
 				if count == 0 {
 					return nil
 				}
