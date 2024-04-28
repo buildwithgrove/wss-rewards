@@ -2,6 +2,7 @@ package relayer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	nodepkg "github.com/pokt-foundation/portal-middleware/node"
 	"github.com/pokt-foundation/portal-middleware/protocol"
+	"github.com/pokt-foundation/portal-middleware/relay"
 	"github.com/pokt-foundation/portal-middleware/session"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-rewards/cache"
@@ -238,8 +240,8 @@ func Test_Relayer_dispatchSessionData(t *testing.T) {
 
 					for _, node := range session.Nodes() {
 						result[node.ID()] = sessionData{
-							Session: &session,
-							Node:    &node,
+							Session: session,
+							Node:    node,
 						}
 					}
 				}
@@ -289,7 +291,156 @@ func Test_Relayer_dispatchSessionData(t *testing.T) {
 	}
 }
 
+func Test_Relayer_constructRelayGroups(t *testing.T) {
+	tests := []struct {
+		name                   string
+		fetchedData            relayGroupData
+		expectedRelayGroups    relayGroups
+		expectedNodesInSession map[cache.NodeKey]struct{}
+		expectError            bool
+	}{
+		{
+			name: "should construct relay groups correctly",
+			fetchedData: relayGroupData{
+				allWSRelays: map[cache.NodeKey]int64{
+					{NodeID: "0021-node-1", ChainID: "0021", PortalAppID: "test_app_1"}:  43,
+					{NodeID: "0040-node-1", ChainID: "0040", PortalAppID: "test_app_1"}:  8,
+					{NodeID: "0040-node-2", ChainID: "0040", PortalAppID: "test_app_2"}:  17,
+					{NodeID: "0040-node-27", ChainID: "0040", PortalAppID: "test_app_2"}: 51, // node not in session
+				},
+				sessionDataByNode: getTestSessionDataByNode(),
+				chainsByID:        derefChainsMap(getTestChains()),
+				portalAppsByID:    derefPortalAppsMap(getTestPortalAppLites()),
+			},
+			expectedRelayGroups: relayGroups{
+				{
+					Count: 43,
+					RelayRequest: relay.RelayRequest{
+						Relays: []relay.Relay{
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
+						},
+						Details: relay.RelayDetails{
+							UserApplication: *getTestPortalAppLites()["test_app_1"],
+							Chain:           *getTestChains()["0021"],
+						},
+						Origin: "wss://eth-mainnet.rpc.grove.city",
+						Method: "POST",
+						Path:   "/v1/test_app_1",
+					},
+					Session: session.MorseSession{
+						Session: provider.Session{
+							Header: provider.SessionHeader{
+								AppPublicKey: "test_37a0e8437f5149dc98a9a5b207efc2d0",
+								Chain:        "0021",
+							},
+							Nodes: getNodesForTestSession(protocol.MorseApp{Chain: "0021"}),
+						},
+					},
+					Node: nodepkg.V0Node{
+						ProviderNode: provider.Node{PublicKey: "0021-node-1"},
+					},
+				},
+				{
+					Count: 8,
+					RelayRequest: relay.RelayRequest{
+						Relays: []relay.Relay{
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
+						},
+						Details: relay.RelayDetails{
+							UserApplication: *getTestPortalAppLites()["test_app_1"],
+							Chain:           *getTestChains()["0040"],
+						},
+						Origin: "wss://harmony-0.rpc.grove.city",
+						Method: "POST",
+						Path:   "/v1/test_app_1",
+					},
+					Session: session.MorseSession{
+						Session: provider.Session{
+							Header: provider.SessionHeader{
+								AppPublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e",
+								Chain:        "0040",
+							},
+							Nodes: getNodesForTestSession(protocol.MorseApp{Chain: "0040"}),
+						},
+					},
+					Node: nodepkg.V0Node{
+						ProviderNode: provider.Node{PublicKey: "0040-node-1"},
+					},
+				},
+				{
+					Count: 17,
+					RelayRequest: relay.RelayRequest{
+						Relays: []relay.Relay{
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
+						},
+						Details: relay.RelayDetails{
+							UserApplication: *getTestPortalAppLites()["test_app_2"],
+							Chain:           *getTestChains()["0040"],
+						},
+						Origin: "wss://harmony-0.rpc.grove.city",
+						Method: "POST",
+						Path:   "/v1/test_app_2",
+					},
+					Session: session.MorseSession{
+						Session: provider.Session{
+							Header: provider.SessionHeader{
+								AppPublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e",
+								Chain:        "0040",
+							},
+							Nodes: getNodesForTestSession(protocol.MorseApp{Chain: "0040"}),
+						},
+					},
+					Node: nodepkg.V0Node{
+						ProviderNode: provider.Node{PublicKey: "0040-node-2"},
+					},
+				},
+			},
+			expectedNodesInSession: map[cache.NodeKey]struct{}{
+				{ChainID: "0021", NodeID: "0021-node-1", PortalAppID: "test_app_1"}: {},
+				{ChainID: "0040", NodeID: "0040-node-1", PortalAppID: "test_app_1"}: {},
+				{ChainID: "0040", NodeID: "0040-node-2", PortalAppID: "test_app_2"}: {},
+			},
+			expectError: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			relayer := &wsRelayer{} // Assuming wsRelayer is the struct type
+
+			relayGroups, err := relayer.constructRelayGroups(test.fetchedData)
+
+			if test.expectError {
+				c.Error(err)
+			} else {
+				c.NoError(err)
+				c.Equal(test.expectedRelayGroups, relayGroups)
+				c.Equal(test.expectedNodesInSession, relayGroups.getNodeKeys())
+			}
+		})
+	}
+}
+
 // Mock test data
+
+func getTestSessionDataByNode() map[nodepkg.ID]sessionData {
+	result := make(map[nodepkg.ID]sessionData)
+
+	for _, app := range getTestStakedApps() {
+		session := getTestSession(app)
+
+		for _, node := range session.Nodes() {
+			result[node.ID()] = sessionData{
+				Session: session,
+				Node:    node,
+			}
+		}
+	}
+
+	return result
+}
 
 func getTestStakedApps() []protocol.App {
 	gigastakeApps := getTestGigastakeApps()
@@ -308,20 +459,20 @@ func getTestStakedApps() []protocol.App {
 }
 
 func getTestSession(app protocol.App) session.Session {
-	morseApp := app.(protocol.MorseApp) // Assuming the app is of type MorseApp
+	morseApp := app.(protocol.MorseApp)
 	return session.MorseSession{
 		Session: provider.Session{
 			Header: provider.SessionHeader{
 				AppPublicKey: string(morseApp.PublicKey),
 				Chain:        string(morseApp.Chain),
 			},
-			Nodes: getNodesForTestSession(app),
+			Nodes: getNodesForTestSession(morseApp),
 		},
 	}
 }
 
 func getNodesForTestSession(app protocol.App) []provider.Node {
-	morseApp := app.(protocol.MorseApp) // Assuming the app is of type MorseApp
+	morseApp := app.(protocol.MorseApp)
 	nodes := make([]provider.Node, 24)
 	for i := 0; i < 24; i++ {
 		nodes[i] = provider.Node{
@@ -337,7 +488,7 @@ type ChainOptions struct {
 	IncludeGigastakeApps bool
 }
 
-func getTestChains(opts ...ChainOptions) map[types.RelayChainID]*types.Chain {
+func getTestChains() map[types.RelayChainID]*types.Chain {
 	chains := map[types.RelayChainID]*types.Chain{
 		"0001": {
 			ID:            "0001",
@@ -524,13 +675,10 @@ func getTestChains(opts ...ChainOptions) map[types.RelayChainID]*types.Chain {
 		},
 	}
 
-	if len(opts) > 0 && opts[0].IncludeGigastakeApps {
-
-		for _, gigastakeApp := range getTestGigastakeApps() {
-			for chainID := range gigastakeApp.ChainIDs {
-				if chain, ok := chains[chainID]; ok {
-					chain.SetGigastakeApp(gigastakeApp)
-				}
+	for _, gigastakeApp := range getTestGigastakeApps() {
+		for chainID := range gigastakeApp.ChainIDs {
+			if chain, ok := chains[chainID]; ok {
+				chain.SetGigastakeApp(gigastakeApp)
 			}
 		}
 	}
@@ -543,7 +691,7 @@ func getTestGigastakeApps() map[types.GigastakeAppID]*types.GigastakeApp {
 		"test_gigastake_app_1": {
 			ID:              "test_gigastake_app_1",
 			ProtocolID:      types.ProtocolMorseMainnet,
-			ChainIDs:        map[types.RelayChainID]struct{}{"0001": {}},
+			ChainIDs:        map[types.RelayChainID]struct{}{"0001": {}, "0021": {}},
 			Name:            "pokt_gigastake",
 			Address:         "test_8d4f6a5b0c6e9f1db12c1f662e5ec8c5",
 			PublicKey:       types.GigastakeAppPublicKey("test_37a0e8437f5149dc98a9a5b207efc2d0"),
