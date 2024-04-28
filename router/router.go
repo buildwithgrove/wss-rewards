@@ -15,11 +15,11 @@ import (
 
 type (
 	wsRouter struct {
+		mux      *http.ServeMux
 		cache    iCache
 		apiKeys  map[string]bool
-		mux      *http.ServeMux
-		logger   *logger.Logger
 		imageTag string
+		logger   *slog.Logger
 	}
 
 	Config struct {
@@ -43,6 +43,7 @@ func Start(ctx context.Context, config Config) error {
 
 	server := &http.Server{
 		Addr:           fmt.Sprintf(":%s", config.Port),
+		Handler:        router.mux,
 		ReadTimeout:    5 * time.Second,
 		WriteTimeout:   10 * time.Second,
 		IdleTimeout:    120 * time.Second,
@@ -85,8 +86,11 @@ func (wr *wsRouter) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 // newAPIRouter creates a new APIRouter instance
 func newAPIRouter(config Config) *wsRouter {
 	wr := &wsRouter{
+		mux:      http.NewServeMux(),
+		cache:    config.Cache,
+		apiKeys:  config.APIKeys,
 		imageTag: config.ImageTag,
-		logger:   config.Logger,
+		logger:   config.Logger.With("package", "router"),
 	}
 
 	// GET /healthz - handleHealthz returns a simple health check response
@@ -109,12 +113,14 @@ func (wr *wsRouter) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		wr.logger.Error("error marshalling health check response", slog.String("error", err.Error()))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	_, err = w.Write(responseBytes)
 	if err != nil {
 		wr.logger.Error("error writing health check response", slog.String("error", err.Error()))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 }
@@ -124,6 +130,7 @@ func (wr *wsRouter) handleGetWSRelays(w http.ResponseWriter, r *http.Request) {
 	relays, err := wr.cache.GetAllWSRelays()
 	if err != nil {
 		wr.logger.Error("error getting all ws relays", slog.String("error", err.Error()))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 

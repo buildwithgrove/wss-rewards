@@ -23,11 +23,11 @@ const (
 
 	// Optional env variables
 	relayBatchSizeEnv     = "RELAY_BATCH_SIZE"
-	defaultRelayBatchSize = 1_000
+	defaultRelayBatchSize = 100
 	dbPathEnv             = "DB_PATH"
-	defaultDBPath         = "../badger/db"
+	defaultDBPath         = "./tmp/db"
 	portEnv               = "PORT"
-	defaultPort           = "8080"
+	defaultPort           = "8100"
 	imageTagEnv           = "IMAGE_TAG"
 	defaultImageTag       = "development"
 )

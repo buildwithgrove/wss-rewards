@@ -62,7 +62,7 @@ func (k *NodeKey) string() string {
 func nodeKeyFromString(s string) (NodeKey, error) {
 	parts := strings.Split(s, "-")
 	if len(parts) != 3 {
-		return NodeKey{}, fmt.Errorf("invalid node key format")
+		return NodeKey{}, fmt.Errorf("invalid node key: %s", s)
 	}
 
 	nodeKey := NodeKey{

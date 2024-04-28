@@ -224,14 +224,15 @@ func (r *wsRelayer) getRelayGroups(data fetchedData) (relayGroups, error) {
 		return nil, err
 	}
 	if len(allWSRelays) == 0 {
-		return nil, errors.New("no websocket relays found in cache")
+		r.logger.Info("no websocket relays found in cache")
+		return nil, nil
 	}
 
 	// filter staked apps to only include those staked for chains that have relays
 	stakedAppsWithRelays := r.filterAppsForChainsWithRelays(data.stakedApps, allWSRelays.Chains())
 
 	// get sessions and nodes, mapped by node IDs
-	sessionDataByNode, err := r.dispatchSessionData(stakedAppsWithRelays)
+	sessionDataByNode, err := r.getSessionData(stakedAppsWithRelays)
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +247,7 @@ func (r *wsRelayer) getRelayGroups(data fetchedData) (relayGroups, error) {
 	return r.constructRelayGroups(relayGroupData)
 }
 
-// filterAppsForChainsWithRelays filters applications based on chains that have relays.
+// filterAppsForChainsWithRelays ensures only staked apps for chains with relays are returned.
 func (r *wsRelayer) filterAppsForChainsWithRelays(stakedApps []protocol.App, chainsWithRelays map[types.RelayChainID]struct{}) []protocol.App {
 	var stakedAppsWithRelays []protocol.App
 
@@ -261,8 +262,8 @@ func (r *wsRelayer) filterAppsForChainsWithRelays(stakedApps []protocol.App, cha
 	return stakedAppsWithRelays
 }
 
-// dispatchSessionData dispatches sessions for filtered applications and stores session and node details.
-func (r *wsRelayer) dispatchSessionData(stakedAppsWithRelays []protocol.App) (map[nodepkg.ID]sessionData, error) {
+// getSessionData calls dispatch to get sessions for staked aps with relays and returns session and node details.
+func (r *wsRelayer) getSessionData(stakedAppsWithRelays []protocol.App) (map[nodepkg.ID]sessionData, error) {
 	sessionDataByNode := make(map[nodepkg.ID]sessionData)
 
 	var mu sync.Mutex
@@ -354,6 +355,7 @@ func (r *wsRelayer) constructRelayGroups(data relayGroupData) (relayGroups, erro
 	return relayGroups, nil
 }
 
+// sendNodeRelay sends a relay to a node to credit them on-chain for websocket messages through the gateway.
 func (r *wsRelayer) sendNodeRelay(request relay.RelayRequest, session sessionpkg.Session, node nodepkg.Node) (protocol.ProtocolResponse, relay.RelayLog, error) {
 	if !session.NodeInSession(node) {
 		return protocol.MorseRelayResponse{}, relay.RelayLog{}, errors.New("could not find node with id " + string(node.ID()))
@@ -376,6 +378,7 @@ func (r *wsRelayer) sendNodeRelay(request relay.RelayRequest, session sessionpkg
 	return output, relayLog, err
 }
 
+// sendNetworkRelay sends a relay to a node to credit them on-chain for websocket messages through the gateway.
 func (r *wsRelayer) sendNetworkRelay(req relay.RelayRequest, relayLog relay.RelayLog, session sessionpkg.Session, node nodepkg.Node) (protocol.ProtocolResponse, relay.RelayLog, error) {
 	data, err := json.Marshal(req.Relays[0]) // there will only ever be one relay for ws relay requests
 	if err != nil {

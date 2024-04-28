@@ -66,9 +66,6 @@ func Test_Relayer_fetchData(t *testing.T) {
 			chains:         mapChainsToSlice(getTestChains()),
 			portalAppLites: mapPortalAppsToSlice(getTestPortalAppLites()),
 			stakedApps:     getTestStakedApps(),
-			chainsErr:      nil,
-			portalAppsErr:  nil,
-			stakedAppsErr:  nil,
 			expectedFetchedData: fetchedData{
 				chainsByID:     derefChainsMap(getTestChains()),
 				portalAppsByID: derefPortalAppsMap(getTestPortalAppLites()),
@@ -222,7 +219,7 @@ func Test_Relayer_filterAppsForChainsWithRelays(t *testing.T) {
 	}
 }
 
-func Test_Relayer_dispatchSessionData(t *testing.T) {
+func Test_Relayer_getSessionData(t *testing.T) {
 	tests := []struct {
 		name                string
 		stakedApps          []protocol.App
@@ -273,7 +270,7 @@ func Test_Relayer_dispatchSessionData(t *testing.T) {
 				}
 			}
 
-			sessionDataByNode, err := relayer.dispatchSessionData(test.stakedApps)
+			sessionDataByNode, err := relayer.getSessionData(test.stakedApps)
 
 			if test.expectError {
 				c.Error(err)
@@ -303,10 +300,10 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 			name: "should construct relay groups correctly",
 			fetchedData: relayGroupData{
 				allWSRelays: map[cache.NodeKey]int64{
-					{NodeID: "0021-node-1", ChainID: "0021", PortalAppID: "test_app_1"}:  43,
-					{NodeID: "0040-node-1", ChainID: "0040", PortalAppID: "test_app_1"}:  8,
-					{NodeID: "0040-node-2", ChainID: "0040", PortalAppID: "test_app_2"}:  17,
-					{NodeID: "0040-node-27", ChainID: "0040", PortalAppID: "test_app_2"}: 51, // node not in session
+					{NodeID: "0021_node_1", ChainID: "0021", PortalAppID: "test_app_1"}:  43,
+					{NodeID: "0040_node_1", ChainID: "0040", PortalAppID: "test_app_1"}:  8,
+					{NodeID: "0040_node_2", ChainID: "0040", PortalAppID: "test_app_2"}:  17,
+					{NodeID: "0040_node_27", ChainID: "0040", PortalAppID: "test_app_2"}: 51, // node not in session
 				},
 				sessionDataByNode: getTestSessionDataByNode(),
 				chainsByID:        derefChainsMap(getTestChains()),
@@ -337,7 +334,7 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 						},
 					},
 					Node: nodepkg.V0Node{
-						ProviderNode: provider.Node{PublicKey: "0021-node-1"},
+						ProviderNode: provider.Node{PublicKey: "0021_node_1"},
 					},
 				},
 				{
@@ -364,7 +361,7 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 						},
 					},
 					Node: nodepkg.V0Node{
-						ProviderNode: provider.Node{PublicKey: "0040-node-1"},
+						ProviderNode: provider.Node{PublicKey: "0040_node_1"},
 					},
 				},
 				{
@@ -391,14 +388,14 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 						},
 					},
 					Node: nodepkg.V0Node{
-						ProviderNode: provider.Node{PublicKey: "0040-node-2"},
+						ProviderNode: provider.Node{PublicKey: "0040_node_2"},
 					},
 				},
 			},
 			expectedNodesInSession: map[cache.NodeKey]struct{}{
-				{ChainID: "0021", NodeID: "0021-node-1", PortalAppID: "test_app_1"}: {},
-				{ChainID: "0040", NodeID: "0040-node-1", PortalAppID: "test_app_1"}: {},
-				{ChainID: "0040", NodeID: "0040-node-2", PortalAppID: "test_app_2"}: {},
+				{NodeID: "0021_node_1", ChainID: "0021", PortalAppID: "test_app_1"}: {},
+				{NodeID: "0040_node_1", ChainID: "0040", PortalAppID: "test_app_1"}: {},
+				{NodeID: "0040_node_2", ChainID: "0040", PortalAppID: "test_app_2"}: {},
 			},
 			expectError: false,
 		},
@@ -476,7 +473,7 @@ func getNodesForTestSession(app protocol.App) []provider.Node {
 	nodes := make([]provider.Node, 24)
 	for i := 0; i < 24; i++ {
 		nodes[i] = provider.Node{
-			PublicKey: fmt.Sprintf("%s-node-%d", morseApp.Chain, i+1),
+			PublicKey: fmt.Sprintf("%s_node_%d", morseApp.Chain, i+1),
 		}
 	}
 	return nodes

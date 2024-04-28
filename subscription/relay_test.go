@@ -10,9 +10,10 @@ import (
 	"github.com/pokt-foundation/pocket-go/provider"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/node"
+	ws "github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-rewards/cache"
-	"github.com/pokt-foundation/wss-rewards/messenger"
+
 	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +21,7 @@ import (
 func TestRelaySubscriber_Process(t *testing.T) {
 	tests := []struct {
 		name              string
-		relayMessages     []messenger.WSMetadata
+		relayMessages     []ws.WSMetadata
 		batchSize         int16
 		expectedCallCount int
 	}{
@@ -44,7 +45,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 
 			mockCache := newMockICache(t)
 
-			relayCh := make(chan messenger.WSMetadata, len(test.relayMessages))
+			relayCh := make(chan ws.WSMetadata, len(test.relayMessages))
 			for _, relay := range test.relayMessages {
 				relayCh <- relay
 			}
@@ -86,7 +87,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 	}
 }
 
-func generateRandomWSMetadata(n int) []messenger.WSMetadata {
+func generateRandomWSMetadata(n int) []ws.WSMetadata {
 	nodes := make([]node.V0Node, 5)
 	for i := range nodes {
 		nodes[i] = node.V0Node{
@@ -104,25 +105,25 @@ func generateRandomWSMetadata(n int) []messenger.WSMetadata {
 		apps[i] = types.PortalAppLite{ID: types.PortalAppID(fmt.Sprintf("app_%d", i))}
 	}
 
-	metadata := make([]messenger.WSMetadata, n)
+	metadata := make([]ws.WSMetadata, n)
 	for i := 0; i < n; i++ {
-		metadata[i] = messenger.WSMetadata{
-			Node:      nodes[rand.Intn(len(nodes))],
-			ChainID:   chains[rand.Intn(len(chains))],
-			PortalApp: apps[rand.Intn(len(apps))],
+		metadata[i] = ws.WSMetadata{
+			NodeID:      nodes[rand.Intn(len(nodes))].ID(),
+			ChainID:     chains[rand.Intn(len(chains))],
+			PortalAppID: apps[rand.Intn(len(apps))].ID,
 		}
 	}
 
 	return metadata
 }
 
-func generateExpectedRelaysMap(relays []messenger.WSMetadata) map[cache.NodeKey]int64 {
+func generateExpectedRelaysMap(relays []ws.WSMetadata) map[cache.NodeKey]int64 {
 	expectedRelaysMap := make(map[cache.NodeKey]int64)
 	for _, relay := range relays {
 		key := cache.NodeKey{
-			NodeID:      relay.Node.ID(),
+			NodeID:      relay.NodeID,
 			ChainID:     relay.ChainID,
-			PortalAppID: relay.PortalApp.ID,
+			PortalAppID: relay.PortalAppID,
 		}
 		expectedRelaysMap[key]++
 	}

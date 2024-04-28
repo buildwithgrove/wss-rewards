@@ -2,6 +2,8 @@ module github.com/pokt-foundation/wss-rewards
 
 go 1.22
 
+replace github.com/pokt-foundation/portal-middleware => ../portal-middleware
+
 replace github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alpha.regen.1
 
 replace github.com/pokt-network/smt => github.com/pokt-network/smt v0.9.3-0.20240321060129-e3dbbbd9f97d

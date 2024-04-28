@@ -2,15 +2,15 @@ package messenger
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/utils-go/logger"
 
 	"github.com/pokt-foundation/portal-middleware/messaging"
-	"github.com/pokt-foundation/portal-middleware/node"
+	ws "github.com/pokt-foundation/portal-middleware/websockets"
 )
 
 // TODO: Get values from middleware
@@ -30,57 +30,52 @@ type (
 
 		relaysBytesChan chan []byte
 		natsBytesChan   chan *nats.Msg
-		relaysChan      chan WSMetadata
+		relaysChan      chan ws.WSMetadata
 		MetricsReporter MetricsReporter
 	}
 
 	Messenger interface {
 		// TODO: remove once all dependencies have been refactored out
 		messaging.Subscriber
-		RelaysChannel() <-chan WSMetadata
-	}
-
-	WSMetadata struct {
-		Message   []byte              `json:"message"`
-		Node      node.Node           `json:"node"`
-		PortalApp types.PortalAppLite `json:"portal_app"`
-		ChainID   types.RelayChainID  `json:"chain_id"`
+		RelaysChannel() <-chan ws.WSMetadata
 	}
 )
 
 type MetricsReporter interface {
-	RelaysChanFull(r WSMetadata)
+	RelaysChanFull(r ws.WSMetadata)
 	RelayBytesChanFull(messageLength int)
 	NATSChanSize(size int)
 	RelayBytesReceivedFromGateway(messageLength int)
 	RelayUnmarshalFailed(messageLength int)
-	RelayReceivedFromGateway(r WSMetadata)
+	RelayReceivedFromGateway(r ws.WSMetadata)
 	RelaySavedAttempt(relayCount int16)
 	RelaySaved(relayCount int16)
 	RelayDropped(relayCount int16)
 }
 
-// TODO: remove the return type messaging.Subscriber
 func NewSubscriber(natsOptions messaging.NATSOptions, queueGroupRelay string, metricsReporter MetricsReporter, logger *logger.Logger) (*subscriber, error) {
 	natsConn, err := messaging.NewNATS(natsOptions, true)
 	if err != nil {
 		return &subscriber{}, err
+	}
+	if natsConn.GetConnection() == nil {
+		return &subscriber{}, fmt.Errorf("nats connection is nil")
 	}
 
 	// TODO: does this channel's length need to be configurable?
 	relaysBytesChan := make(chan []byte, 300_000)
 	natsBytesChan := make(chan *nats.Msg, 1_000_000)
 
-	relaysChan := make(chan WSMetadata, 300_000)
+	relaysChan := make(chan ws.WSMetadata, 300_000)
 
 	s := &subscriber{
 		queueGroupRelay: queueGroupRelay,
 		natsConn:        natsConn,
-		logger:          logger.With("package", "messenger"),
 		relaysBytesChan: relaysBytesChan,
 		natsBytesChan:   natsBytesChan,
 		relaysChan:      relaysChan,
 		MetricsReporter: metricsReporter,
+		logger:          logger.With("package", "messenger"),
 	}
 
 	// TODO: REFACTOR to consolidate input parameters in a struct
@@ -106,7 +101,7 @@ func (m *subscriber) startRelayUnmarshaller() {
 	for {
 		bytes := <-m.relaysBytesChan
 
-		var r WSMetadata
+		var r ws.WSMetadata
 		if err := json.Unmarshal(bytes, &r); err != nil {
 			m.MetricsReporter.RelayUnmarshalFailed(len(bytes))
 			m.logger.Error("error unmarshalling", slog.Int("message length", len(bytes)), slog.String("error", err.Error()))
@@ -125,10 +120,6 @@ func (m *subscriber) startRelayUnmarshaller() {
 			continue
 		}
 	}
-}
-
-func (m *subscriber) SubscribeToRelays(_ chan WSMetadata) error {
-	return nil
 }
 
 func (s *subscriber) startNATSSubscription() {
@@ -158,7 +149,7 @@ func (s *subscriber) startRelaySubscription() {
 	}
 }
 
-func (s *subscriber) RelaysChannel() <-chan WSMetadata {
+func (s *subscriber) RelaysChannel() <-chan ws.WSMetadata {
 	return s.relaysChan
 }
 

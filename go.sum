@@ -950,8 +950,6 @@ github.com/pokt-foundation/pocket-go v0.17.0 h1:hBAf4qFOD3vohdycUL6lAWg0WaTDMPV0
 github.com/pokt-foundation/pocket-go v0.17.0/go.mod h1:TyJgMIbfVF9qhjTMU9u+TeiBwYKLq6+YZhq6POLNeHE=
 github.com/pokt-foundation/portal-http-db/v2 v2.15.0 h1:R702IWDcbOxSduIYGN5cQ87dj0TkLOymox6X9sgD+y4=
 github.com/pokt-foundation/portal-http-db/v2 v2.15.0/go.mod h1:IuGu8hFx21Q4YtHKw9t/PXv2lze5ZDjEphlpTA4kl3w=
-github.com/pokt-foundation/portal-middleware v0.0.219 h1:qTwSpkUY7HgzWrRqLSQhXrHMt0G/CSbQtiNqPBtAhTg=
-github.com/pokt-foundation/portal-middleware v0.0.219/go.mod h1:iFy4NT10WBLxWEQJuZcdIb1Eqe6QWepNQzXOqyUAhl4=
 github.com/pokt-foundation/utils-go v0.11.1 h1:o/kF4KFaClAz2AvybDrEQR1TpEEx6zwyuGcOlD/aLuY=
 github.com/pokt-foundation/utils-go v0.11.1/go.mod h1:YZDpKHum+UINTYIzFJvLdlne2ksnlBonszqZQ7mkKnU=
 github.com/pokt-network/poktroll v0.0.0-20240410170002-e690aaf64a5d h1:pF5oUKwtmObyHa8R8V4ZAK9z0U5wPVRcCEwJvpZT50Q=

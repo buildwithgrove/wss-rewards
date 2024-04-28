@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"sync"
 
+	ws "github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-rewards/cache"
-	"github.com/pokt-foundation/wss-rewards/messenger"
 )
 
 const retries = 3
@@ -23,8 +23,8 @@ var (
 
 type (
 	RelaySubscriber struct {
-		relayCh    <-chan messenger.WSMetadata
-		relayBatch []messenger.WSMetadata
+		relayCh    <-chan ws.WSMetadata
+		relayBatch []ws.WSMetadata
 		cache      ICache
 		batchSize  int16
 		mu         *sync.Mutex
@@ -46,7 +46,7 @@ type (
 func NewRelaySubscriber(config RelaySubscriberConfig) (*RelaySubscriber, error) {
 	return &RelaySubscriber{
 		cache:      config.Cache,
-		relayBatch: make([]messenger.WSMetadata, 0, config.BatchSize),
+		relayBatch: make([]ws.WSMetadata, 0, config.BatchSize),
 		batchSize:  config.BatchSize,
 		mu:         config.Mutex,
 		logger:     config.Logger.With("subscriber", "meter"),
@@ -92,9 +92,9 @@ func (rs *RelaySubscriber) persistWSRelays() error {
 
 	for _, relay := range rs.relayBatch {
 		key := cache.NodeKey{
-			NodeID:      relay.Node.ID(),
+			NodeID:      relay.NodeID,
 			ChainID:     relay.ChainID,
-			PortalAppID: relay.PortalApp.ID,
+			PortalAppID: relay.PortalAppID,
 		}
 
 		if err := key.Validate(); err != nil {

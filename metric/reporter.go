@@ -3,7 +3,7 @@ package metric
 import (
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/metrics/exporter"
-	"github.com/pokt-foundation/wss-rewards/messenger"
+	ws "github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -30,9 +30,9 @@ var (
 )
 
 type Reporter interface {
-	RelaysChanFull(r messenger.WSMetadata)
+	RelaysChanFull(r ws.WSMetadata)
 	RelayUnmarshalFailed(messageLength int)
-	RelayReceivedFromGateway(r messenger.WSMetadata)
+	RelayReceivedFromGateway(r ws.WSMetadata)
 	RelayBytesChanFull(messageLength int)
 	RelayBytesReceivedFromGateway(messageLength int)
 	RelaySavedAttempt(messageLength int16)
@@ -89,7 +89,7 @@ func (r *reporter) RelayUnmarshalFailed(messageLength int) {
 	r.e.Histogram(metricCategorySubscribers, metricNameRelayUnmarshalFailed).Observe(float64(messageLength))
 }
 
-func (r *reporter) RelaysChanFull(relay messenger.WSMetadata) {
+func (r *reporter) RelaysChanFull(relay ws.WSMetadata) {
 	prepareForReport(&relay)
 	r.e.Counter(metricCategorySubscribers, metricNameRelaysChanFull).IncWithLabels(
 		prometheus.Labels{
@@ -98,7 +98,7 @@ func (r *reporter) RelaysChanFull(relay messenger.WSMetadata) {
 	)
 }
 
-func (r *reporter) RelayReceivedFromGateway(relay messenger.WSMetadata) {
+func (r *reporter) RelayReceivedFromGateway(relay ws.WSMetadata) {
 	prepareForReport(&relay)
 	r.e.Counter(metricCategorySubscribers, metricNameRelayReceived).IncWithLabels(
 		prometheus.Labels{
@@ -120,7 +120,7 @@ func (r *reporter) RelayDropped(relaysCount int16) {
 }
 
 // prepareForReport adds default values to unset fields to make exported metrics easier to read
-func prepareForReport(r *messenger.WSMetadata) {
+func prepareForReport(r *ws.WSMetadata) {
 	if r == nil {
 		return
 	}
