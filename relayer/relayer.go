@@ -249,18 +249,39 @@ func (r *wsRelayer) filterAppsForChainsWithRelays(stakedApps []protocol.App, cha
 func (r *wsRelayer) dispatchSessionData(stakedAppsWithRelays []protocol.App) (map[nodepkg.ID]sessionData, error) {
 	sessionDataByNode := make(map[nodepkg.ID]sessionData)
 
-	for _, stakedApp := range stakedAppsWithRelays {
-		session, err := r.protocol.Dispatch(stakedApp)
-		if err != nil {
-			return nil, err
-		}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	errorsChan := make(chan error, len(stakedAppsWithRelays))
 
-		for _, node := range session.Nodes() {
-			sessionDataByNode[node.ID()] = sessionData{
-				Session: &session,
-				Node:    &node,
+	for _, stakedApp := range stakedAppsWithRelays {
+		wg.Add(1)
+
+		// send each Dispatch request to the protocol concurrently
+		go func(app protocol.App) {
+			defer wg.Done()
+
+			session, err := r.protocol.Dispatch(app)
+			if err != nil {
+				errorsChan <- err
+				return
 			}
-		}
+
+			mu.Lock()
+			for _, node := range session.Nodes() {
+				sessionDataByNode[node.ID()] = sessionData{
+					Session: &session,
+					Node:    &node,
+				}
+			}
+			mu.Unlock()
+		}(stakedApp)
+	}
+
+	wg.Wait()
+	close(errorsChan)
+
+	if len(errorsChan) > 0 {
+		return nil, <-errorsChan
 	}
 
 	return sessionDataByNode, nil
