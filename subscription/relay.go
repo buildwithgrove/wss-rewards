@@ -7,9 +7,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/pokt-foundation/portal-http-db/v2/types"
-	"github.com/pokt-foundation/portal-middleware/node"
 	"github.com/pokt-foundation/utils-go/logger"
+	"github.com/pokt-foundation/wss-rewards/cache"
 	"github.com/pokt-foundation/wss-rewards/messenger"
 )
 
@@ -40,40 +39,9 @@ type (
 	}
 
 	ICache interface {
-		SetWSRelays(map[NodeKey]int64) error
-	}
-
-	// TODO - move to cache
-	NodeKey struct {
-		NodeID      node.ID
-		ChainID     types.RelayChainID
-		PortalAppID types.PortalAppID
+		SetWSRelays(map[cache.NodeKey]int64) error
 	}
 )
-
-// TODO - move to cache
-func (k *NodeKey) ComposeKey() string {
-	return fmt.Sprintf("%s-%s-%s", k.NodeID, k.ChainID, k.PortalAppID)
-}
-
-// TODO - move to cache
-func (k *NodeKey) DecomposeKey() (node.ID, types.RelayChainID, types.PortalAppID) {
-	return k.NodeID, k.ChainID, k.PortalAppID
-}
-
-// TODO - move to cache
-func (k *NodeKey) Validate() error {
-	if k.NodeID == "" {
-		return ErrNodeIDRequired
-	}
-	if k.ChainID == "" {
-		return ErrChainIDRequired
-	}
-	if k.PortalAppID == "" {
-		return ErrPortalAppIDRequired
-	}
-	return nil
-}
 
 func NewRelaySubscriber(config RelaySubscriberConfig) (*RelaySubscriber, error) {
 	return &RelaySubscriber{
@@ -89,12 +57,13 @@ func (rs *RelaySubscriber) Name() string {
 	return "relay"
 }
 
-func (rs *RelaySubscriber) Subscribe(m messenger.Messenger) error {
+func (rs *RelaySubscriber) Subscribe(m iMessenger) error {
 	rs.relayCh = m.RelaysChannel()
 	return nil
 }
 
 func (rs *RelaySubscriber) Process(ctx context.Context) {
+	// TODO - block reading from relay channel when sending of WS relays is initiated
 	for relay := range rs.relayCh {
 
 		rs.relayBatch = append(rs.relayBatch, relay)
@@ -119,10 +88,10 @@ func (rs *RelaySubscriber) Process(ctx context.Context) {
 }
 
 func (rs *RelaySubscriber) persistWSRelays() error {
-	relayMap := make(map[NodeKey]int64)
+	relayMap := make(map[cache.NodeKey]int64)
 
 	for _, relay := range rs.relayBatch {
-		key := NodeKey{
+		key := cache.NodeKey{
 			NodeID:      relay.Node.ID(),
 			ChainID:     relay.ChainID,
 			PortalAppID: relay.PortalApp.ID,
@@ -146,5 +115,9 @@ func (rs *RelaySubscriber) persistWSRelays() error {
 		rs.logger.Info(fmt.Sprintf("%d relays persisted", len(rs.relayBatch)))
 	}
 
+	return nil
+}
+
+func (rs *RelaySubscriber) Dispose() error {
 	return nil
 }

@@ -99,6 +99,14 @@ func (a AllWSRelays) HasChain(chainID types.RelayChainID) bool {
 	return ok
 }
 
+func (a AllWSRelays) ToSerializable() map[string]int64 {
+	serializable := make(map[string]int64)
+	for nodeKey, count := range a {
+		serializable[nodeKey.string()] = count
+	}
+	return serializable
+}
+
 func NewCache(config Config) (*Cache, error) {
 	opts := badger.DefaultOptions(config.DBPath)
 	opts.Logger = nil

@@ -11,6 +11,7 @@ import (
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/node"
 	"github.com/pokt-foundation/utils-go/logger"
+	"github.com/pokt-foundation/wss-rewards/cache"
 	"github.com/pokt-foundation/wss-rewards/messenger"
 	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -71,7 +72,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 
 				// Expect SetWSRelays to be called with the expectedRelaysMap
 				mockCache.On("SetWSRelays", expectedRelaysMap).Return(nil).Run(func(args mock.Arguments) {
-					arg := args.Get(0).(map[NodeKey]int64)
+					arg := args.Get(0).(map[cache.NodeKey]int64)
 					c.Equal(expectedRelaysMap, arg)
 				}).Once()
 			}
@@ -115,10 +116,10 @@ func generateRandomWSMetadata(n int) []messenger.WSMetadata {
 	return metadata
 }
 
-func generateExpectedRelaysMap(relays []messenger.WSMetadata) map[NodeKey]int64 {
-	expectedRelaysMap := make(map[NodeKey]int64)
+func generateExpectedRelaysMap(relays []messenger.WSMetadata) map[cache.NodeKey]int64 {
+	expectedRelaysMap := make(map[cache.NodeKey]int64)
 	for _, relay := range relays {
-		key := NodeKey{
+		key := cache.NodeKey{
 			NodeID:      relay.Node.ID(),
 			ChainID:     relay.ChainID,
 			PortalAppID: relay.PortalApp.ID,
@@ -136,7 +137,7 @@ type mockICache struct {
 }
 
 // SetWSRelays provides a mock function with given fields: _a0
-func (_m *mockICache) SetWSRelays(_a0 map[NodeKey]int64) error {
+func (_m *mockICache) SetWSRelays(_a0 map[cache.NodeKey]int64) error {
 	ret := _m.Called(_a0)
 
 	if len(ret) == 0 {
@@ -144,7 +145,7 @@ func (_m *mockICache) SetWSRelays(_a0 map[NodeKey]int64) error {
 	}
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func(map[NodeKey]int64) error); ok {
+	if rf, ok := ret.Get(0).(func(map[cache.NodeKey]int64) error); ok {
 		r0 = rf(_a0)
 	} else {
 		r0 = ret.Error(0)
