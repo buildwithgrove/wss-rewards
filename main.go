@@ -22,12 +22,14 @@ const (
 	apiKeysEnv = "API_KEYS"
 
 	// Optional env variables
-	dbPathEnv       = "DB_PATH"
-	defaultDBPath   = "../badger/db"
-	portEnv         = "PORT"
-	defaultPort     = "8080"
-	imageTagEnv     = "IMAGE_TAG"
-	defaultImageTag = "development"
+	relayBatchSizeEnv     = "RELAY_BATCH_SIZE"
+	defaultRelayBatchSize = 1_000
+	dbPathEnv             = "DB_PATH"
+	defaultDBPath         = "../badger/db"
+	portEnv               = "PORT"
+	defaultPort           = "8080"
+	imageTagEnv           = "IMAGE_TAG"
+	defaultImageTag       = "development"
 )
 
 type options struct {
@@ -35,9 +37,10 @@ type options struct {
 	natsURL string
 	apiKeys map[string]bool
 	// Optional env variables
-	dbPath      string
-	portEnv     string
-	imageTagEnv string
+	relayBatchSize int16
+	dbPath         string
+	portEnv        string
+	imageTagEnv    string
 }
 
 func gatherOptions() options {
@@ -46,9 +49,10 @@ func gatherOptions() options {
 		natsURL: environment.MustGetString(natsURLEnv),
 		apiKeys: environment.MustGetStringMap(apiKeysEnv, ","),
 		// Optional env variables
-		dbPath:      environment.GetString(dbPathEnv, defaultDBPath),
-		portEnv:     environment.GetString(portEnv, defaultPort),
-		imageTagEnv: environment.GetString(imageTagEnv, defaultImageTag),
+		relayBatchSize: int16(environment.GetInt64(relayBatchSizeEnv, defaultRelayBatchSize)),
+		dbPath:         environment.GetString(dbPathEnv, defaultDBPath),
+		portEnv:        environment.GetString(portEnv, defaultPort),
+		imageTagEnv:    environment.GetString(imageTagEnv, defaultImageTag),
 	}
 }
 
@@ -90,7 +94,7 @@ func main() {
 
 	relaySubscriber, err := subscription.NewRelaySubscriber(subscription.RelaySubscriberConfig{
 		Cache:     cache,
-		BatchSize: 1_000,
+		BatchSize: options.relayBatchSize,
 		Mutex:     &mutex,
 		Logger:    logger,
 	})
