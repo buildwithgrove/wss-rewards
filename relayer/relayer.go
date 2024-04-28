@@ -1,6 +1,7 @@
 package relayer
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pokt-foundation/portal-http-db/v2/client"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	nodepkg "github.com/pokt-foundation/portal-middleware/node"
 	"github.com/pokt-foundation/portal-middleware/protocol"
@@ -20,14 +22,18 @@ import (
 )
 
 // TODO - determine custom ID to use for websocket relays
-const wsRelayBody = `{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":43000}` // <- TODO update 43000 once ID determined
+const (
+	wsRelayBody = `{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":43000}` // <- TODO update 43000 once ID determined
+	wsOrigin    = "wss://%s.rpc.grove.city"
+	wsPath      = "/v1/%s"
+)
 
 type (
 	wsRelayer struct {
 		protocolID types.ProtocolID
 		protocol   protocol.PoktProtocol
 		cache      iCache
-		backend    iBackend
+		backend    iDBReader
 		mu         *sync.Mutex
 		logger     *logger.Logger
 	}
@@ -35,24 +41,37 @@ type (
 		ProtocolID types.ProtocolID
 		Protocol   protocol.PoktProtocol
 		Cache      iCache
-		Backend    iBackend
+		Backend    iDBReader
 		Mutex      *sync.Mutex
 		Logger     *logger.Logger
 	}
-
 	iCache interface {
 		GetAllWSRelays() (cache.AllWSRelays, error)
 		ClearWSRelaysByNodeKeys(nodeKeys map[cache.NodeKey]struct{}) error
 	}
-	iBackend interface {
-		GetPortalAppByID(portalAppID types.PortalAppID) (types.PortalAppLite, error)
-		GetChainByID(id types.RelayChainID) (types.Chain, error)
+	iDBReader interface {
+		GetAllChains(ctx context.Context, options ...client.ChainOptions) ([]*types.Chain, error)
+		GetPortalAppsForMiddleware(ctx context.Context) ([]*types.PortalAppLite, error)
 	}
 
+	fetchedData struct {
+		chainsByID     map[types.RelayChainID]types.Chain
+		portalAppsByID map[types.PortalAppID]types.PortalAppLite
+		stakedApps     []protocol.App
+	}
 	sessionData struct {
 		Session *sessionpkg.Session
 		Node    *nodepkg.Node
 	}
+	relayGroupData struct {
+		allWSRelays       cache.AllWSRelays
+		sessionDataByNode map[nodepkg.ID]sessionData
+		chainsByID        map[types.RelayChainID]types.Chain
+		portalAppsByID    map[types.PortalAppID]types.PortalAppLite
+	}
+
+	// relayGroup contains the relay request and session data for a node that is in session and has relays,
+	// as well as how many relays to send to credit the node for handling websocket messages.
 	relayGroup struct {
 		Count        int64
 		RelayRequest relay.RelayRequest
@@ -74,23 +93,33 @@ func NewWSRelayer(config Config) *wsRelayer {
 
 // TODO - determine when to trigger this method - on session rollover? once per hour? TBD.
 func (r *wsRelayer) SendWSRelays() error {
-	// TODO - handle locking goroutine in subscriptions so cache can't be updated while relays are sending
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	relayGroups, nodeKeysToClear, err := r.getRelayGroups()
+	// fetch data from other services first to avoid holding the lock for as long as possible
+	fetchedData, err := r.fetchData()
 	if err != nil {
 		return err
 	}
 
-	// for each relay group start a new goroutine to send the relays
-	for _, rg := range relayGroups {
+	// lock mutex to prevent concurrent writes to cache while relays are being sent
+	// TODO - handle locking goroutine in subscriptions so cache can't be updated while relays are sending
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
+	// get relay groups, which contain relay counts for all nodes with WS relays that are in session
+	relayGroups, nodeKeysToClear, err := r.getRelayGroups(fetchedData)
+	if err != nil {
+		return err
+	}
+
+	for _, rg := range relayGroups {
+		// for each relay group start a new goroutine to send the relays
 		go func(rg relayGroup) {
 			// get all the gigastake apps for the chain as a slice
 			protocolApps := rg.RelayRequest.Details.Chain.GetGigastakeAppsByProtocolID(r.protocolID)
 			if len(protocolApps) == 0 {
-				r.logger.Error("no gigastake apps found for protocol")
+				r.logger.Error("no gigastake apps found",
+					slog.String("chainID", string(rg.RelayRequest.Details.Chain.ID)),
+					slog.String("protocolID", string(r.protocolID)),
+				)
 				return
 			}
 
@@ -126,8 +155,53 @@ func (r *wsRelayer) SendWSRelays() error {
 	return nil
 }
 
+// fetchData fetches all data that must be fetched from other services.
+// This includes chains & portal apps from PHD and staked apps from the protocol.
+func (r *wsRelayer) fetchData() (fetchedData, error) {
+	chainsByID, portalAppsByID, err := r.getPHDData()
+	if err != nil {
+		return fetchedData{}, err
+	}
+
+	stakedApps, err := r.protocol.GetApps()
+	if err != nil {
+		return fetchedData{}, err
+	}
+
+	return fetchedData{
+		chainsByID:     chainsByID,
+		portalAppsByID: portalAppsByID,
+		stakedApps:     stakedApps,
+	}, nil
+}
+
+// getPHDData fetches chains and portal apps from PHD.
+func (r *wsRelayer) getPHDData() (map[types.RelayChainID]types.Chain, map[types.PortalAppID]types.PortalAppLite, error) {
+	chains, err := r.backend.GetAllChains(context.Background())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	chainsByID := make(map[types.RelayChainID]types.Chain, len(chains))
+	for _, chain := range chains {
+		chainsByID[chain.ID] = *chain
+	}
+
+	portalApps, err := r.backend.GetPortalAppsForMiddleware(context.Background())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	portalAppsByID := make(map[types.PortalAppID]types.PortalAppLite, len(portalApps))
+	for _, app := range portalApps {
+		portalAppsByID[app.ID] = *app
+	}
+
+	return chainsByID, portalAppsByID, nil
+}
+
 // getRelayGroups orchestrates the process of getting relay groups.
-func (r *wsRelayer) getRelayGroups() ([]relayGroup, map[cache.NodeKey]struct{}, error) {
+func (r *wsRelayer) getRelayGroups(data fetchedData) ([]relayGroup, map[cache.NodeKey]struct{}, error) {
 	// get all websocket relays from the cache
 	allWSRelays, err := r.cache.GetAllWSRelays()
 	if err != nil {
@@ -137,45 +211,46 @@ func (r *wsRelayer) getRelayGroups() ([]relayGroup, map[cache.NodeKey]struct{}, 
 		return nil, nil, errors.New("no websocket relays found in cache")
 	}
 
-	// get all staked apps from the protocol
-	apps, err := r.protocol.GetApps()
-	if err != nil {
-		return nil, nil, err
-	}
-
 	// filter staked apps to only include those staked for chains that have relays
-	filteredApps := r.filterAppsForChainsWithRelays(apps, allWSRelays.Chains())
+	stakedAppsWithRelays := r.filterAppsForChainsWithRelays(data.stakedApps, allWSRelays.Chains())
 
 	// get sessions and nodes, mapped by node IDs
-	sessionDataByNode, err := r.dispatchSessionData(filteredApps)
+	sessionDataByNode, err := r.dispatchSessionData(stakedAppsWithRelays)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return r.constructRelayGroups(allWSRelays, sessionDataByNode)
+	relayGroupData := relayGroupData{
+		allWSRelays:       allWSRelays,
+		sessionDataByNode: sessionDataByNode,
+		chainsByID:        data.chainsByID,
+		portalAppsByID:    data.portalAppsByID,
+	}
+
+	return r.constructRelayGroups(relayGroupData)
 }
 
 // filterAppsForChainsWithRelays filters applications based on chains that have relays.
-func (r *wsRelayer) filterAppsForChainsWithRelays(apps []protocol.App, chainsWithRelays map[types.RelayChainID]struct{}) []protocol.App {
-	var filteredApps []protocol.App
+func (r *wsRelayer) filterAppsForChainsWithRelays(stakedApps []protocol.App, chainsWithRelays map[types.RelayChainID]struct{}) []protocol.App {
+	var stakedAppsWithRelays []protocol.App
 
-	for _, app := range apps {
+	for _, app := range stakedApps {
 		chainID := types.RelayChainID(app.ServiceID())
 
 		if _, ok := chainsWithRelays[chainID]; ok {
-			filteredApps = append(filteredApps, app)
+			stakedAppsWithRelays = append(stakedAppsWithRelays, app)
 		}
 	}
 
-	return filteredApps
+	return stakedAppsWithRelays
 }
 
 // dispatchSessionData dispatches sessions for filtered applications and stores session and node details.
-func (r *wsRelayer) dispatchSessionData(filteredApps []protocol.App) (map[nodepkg.ID]sessionData, error) {
+func (r *wsRelayer) dispatchSessionData(stakedAppsWithRelays []protocol.App) (map[nodepkg.ID]sessionData, error) {
 	sessionDataByNode := make(map[nodepkg.ID]sessionData)
 
-	for _, app := range filteredApps {
-		session, err := r.protocol.Dispatch(app)
+	for _, stakedApp := range stakedAppsWithRelays {
+		session, err := r.protocol.Dispatch(stakedApp)
 		if err != nil {
 			return nil, err
 		}
@@ -192,14 +267,14 @@ func (r *wsRelayer) dispatchSessionData(filteredApps []protocol.App) (map[nodepk
 }
 
 // constructRelayGroups constructs relay groups for nodes that are in session and have relays.
-func (r *wsRelayer) constructRelayGroups(allWSRelays cache.AllWSRelays, sessionDataByNode map[nodepkg.ID]sessionData) ([]relayGroup, map[cache.NodeKey]struct{}, error) {
+func (r *wsRelayer) constructRelayGroups(data relayGroupData) ([]relayGroup, map[cache.NodeKey]struct{}, error) {
 	nodeKeysToClear := make(map[cache.NodeKey]struct{})
-	relayGroups := make([]relayGroup, 0)
+	var relayGroups []relayGroup
 
-	for nodeKey, relayCount := range allWSRelays {
+	for nodeKey, relayCount := range data.allWSRelays {
 		nodeID, chainID, portalAppID := nodeKey.DecomposeKey()
 
-		sessionData, nodeInSession := sessionDataByNode[nodeID]
+		sessionData, nodeInSession := data.sessionDataByNode[nodeID]
 		if !nodeInSession {
 			continue
 		}
@@ -208,34 +283,30 @@ func (r *wsRelayer) constructRelayGroups(allWSRelays cache.AllWSRelays, sessionD
 		// their relay counts must be cleared from the cache
 		nodeKeysToClear[nodeKey] = struct{}{}
 
-		portalApp, err := r.backend.GetPortalAppByID(portalAppID)
-		if err != nil {
-			return nil, nil, err
+		portalApp, ok := data.portalAppsByID[portalAppID]
+		if !ok {
+			r.logger.Warn("could not find portal app by id", slog.String("portalAppID", string(portalAppID)))
+			continue
 		}
-
-		chain, err := r.backend.GetChainByID(chainID)
-		if err != nil {
-			return nil, nil, err
+		chain, ok := data.chainsByID[chainID]
+		if !ok {
+			r.logger.Warn("could not find chain by id", slog.String("chainID", string(chainID)))
+			continue
 		}
 
 		relayRequest := relay.RelayRequest{
 			Details: relay.RelayDetails{
-				UserApplication: portalApp,
-				GigastakeApp:    types.GigastakeApp{}, // gigastake app chosen per relay
-				Chain:           chain,                // chain contains gigastake apps but
 				Protocol:        r.protocolID,
+				UserApplication: portalApp,
+				Chain:           chain,                // chain contains gigastake apps
+				GigastakeApp:    types.GigastakeApp{}, // random gigastake app will be chosen per relay
 			},
 			Relays: []relay.Relay{
-				relay.JsonRelay{
-					RelayData:     json.RawMessage(wsRelayBody),
-					RelayProtocol: r.protocolID,
-				},
+				relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody), RelayProtocol: r.protocolID},
 			},
 			Method: http.MethodPost,
-			// TODO - fill in below details - are any of these needed at this point?
-			Origin:    "",
-			UserAgent: "",
-			Path:      "",
+			Origin: types.Origin(fmt.Sprintf(wsOrigin, chain.Blockchain)),
+			Path:   fmt.Sprintf(wsPath, portalApp.ID),
 		}
 
 		relayGroup := relayGroup{
@@ -274,9 +345,7 @@ func (r *wsRelayer) sendNodeRelay(request relay.RelayRequest, session sessionpkg
 }
 
 func (r *wsRelayer) sendNetworkRelay(req relay.RelayRequest, relayLog relay.RelayLog, session sessionpkg.Session, node nodepkg.Node) (protocol.ProtocolResponse, relay.RelayLog, error) {
-	// there will only ever be one relay for ws relays
-	data, err := json.Marshal(req.Relays[0])
-
+	data, err := json.Marshal(req.Relays[0]) // there will only ever be one relay for ws relay requests
 	if err != nil {
 		relayLog.Error = err
 		// TODO - handle errors
@@ -288,6 +357,7 @@ func (r *wsRelayer) sendNetworkRelay(req relay.RelayRequest, relayLog relay.Rela
 	var relayPath string
 
 	// For Public RPC endpoints, path comes empty
+	// TODO - do we need this here?
 	if req.Path != "" {
 		relayPath = req.Path
 	} else {
