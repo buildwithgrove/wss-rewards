@@ -60,8 +60,8 @@ type (
 		stakedApps     []protocol.App
 	}
 	sessionData struct {
-		Session *sessionpkg.Session
-		Node    *nodepkg.Node
+		Session sessionpkg.Session
+		Node    nodepkg.Node
 	}
 	relayGroupData struct {
 		allWSRelays       cache.AllWSRelays
@@ -75,10 +75,25 @@ type (
 	relayGroup struct {
 		Count        int64
 		RelayRequest relay.RelayRequest
-		Session      *sessionpkg.Session
-		Node         *nodepkg.Node
+		Session      sessionpkg.Session
+		Node         nodepkg.Node
 	}
+
+	relayGroups []relayGroup
 )
+
+func (g relayGroups) getNodeKeys() map[cache.NodeKey]struct{} {
+	nodeKeys := make(map[cache.NodeKey]struct{})
+	for _, rg := range g {
+		nodeKey := cache.NodeKey{
+			ChainID:     rg.RelayRequest.Details.Chain.ID,
+			NodeID:      rg.Node.ID(),
+			PortalAppID: rg.RelayRequest.Details.UserApplication.ID,
+		}
+		nodeKeys[nodeKey] = struct{}{}
+	}
+	return nodeKeys
+}
 
 func NewWSRelayer(config Config) *wsRelayer {
 	return &wsRelayer{
@@ -105,7 +120,7 @@ func (r *wsRelayer) SendWSRelays() error {
 	defer r.mu.Unlock()
 
 	// get relay groups, which contain relay counts for all nodes with WS relays that are in session
-	relayGroups, nodeKeysToClear, err := r.getRelayGroups(fetchedData)
+	relayGroups, err := r.getRelayGroups(fetchedData)
 	if err != nil {
 		return err
 	}
@@ -135,7 +150,7 @@ func (r *wsRelayer) SendWSRelays() error {
 				relayRequest.Details.Chain = relayRequest.Details.Chain.ClearGigastakeApps()
 
 				// TODO - implement retry?
-				resp, relayLog, err := r.sendNodeRelay(relayRequest, *rg.Session, *rg.Node)
+				resp, relayLog, err := r.sendNodeRelay(relayRequest, rg.Session, rg.Node)
 				if err != nil {
 					r.logger.Error("error sending relay", slog.String("err", err.Error()))
 					continue
@@ -147,8 +162,11 @@ func (r *wsRelayer) SendWSRelays() error {
 		}(rg)
 	}
 
+	// clear all node keys from the cache that relays were sent for
+	nodesInSession := relayGroups.getNodeKeys()
+
 	// TODO - implement this method in cache
-	if err := r.cache.ClearWSRelaysByNodeKeys(nodeKeysToClear); err != nil {
+	if err := r.cache.ClearWSRelaysByNodeKeys(nodesInSession); err != nil {
 		return err
 	}
 
@@ -181,7 +199,6 @@ func (r *wsRelayer) getPHDData() (map[types.RelayChainID]types.Chain, map[types.
 	if err != nil {
 		return nil, nil, err
 	}
-
 	chainsByID := make(map[types.RelayChainID]types.Chain, len(chains))
 	for _, chain := range chains {
 		chainsByID[chain.ID] = *chain
@@ -191,7 +208,6 @@ func (r *wsRelayer) getPHDData() (map[types.RelayChainID]types.Chain, map[types.
 	if err != nil {
 		return nil, nil, err
 	}
-
 	portalAppsByID := make(map[types.PortalAppID]types.PortalAppLite, len(portalApps))
 	for _, app := range portalApps {
 		portalAppsByID[app.ID] = *app
@@ -201,14 +217,14 @@ func (r *wsRelayer) getPHDData() (map[types.RelayChainID]types.Chain, map[types.
 }
 
 // getRelayGroups orchestrates the process of getting relay groups.
-func (r *wsRelayer) getRelayGroups(data fetchedData) ([]relayGroup, map[cache.NodeKey]struct{}, error) {
+func (r *wsRelayer) getRelayGroups(data fetchedData) (relayGroups, error) {
 	// get all websocket relays from the cache
 	allWSRelays, err := r.cache.GetAllWSRelays()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if len(allWSRelays) == 0 {
-		return nil, nil, errors.New("no websocket relays found in cache")
+		return nil, errors.New("no websocket relays found in cache")
 	}
 
 	// filter staked apps to only include those staked for chains that have relays
@@ -217,7 +233,7 @@ func (r *wsRelayer) getRelayGroups(data fetchedData) ([]relayGroup, map[cache.No
 	// get sessions and nodes, mapped by node IDs
 	sessionDataByNode, err := r.dispatchSessionData(stakedAppsWithRelays)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	relayGroupData := relayGroupData{
@@ -249,27 +265,47 @@ func (r *wsRelayer) filterAppsForChainsWithRelays(stakedApps []protocol.App, cha
 func (r *wsRelayer) dispatchSessionData(stakedAppsWithRelays []protocol.App) (map[nodepkg.ID]sessionData, error) {
 	sessionDataByNode := make(map[nodepkg.ID]sessionData)
 
-	for _, stakedApp := range stakedAppsWithRelays {
-		session, err := r.protocol.Dispatch(stakedApp)
-		if err != nil {
-			return nil, err
-		}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	errorsChan := make(chan error, len(stakedAppsWithRelays))
 
-		for _, node := range session.Nodes() {
-			sessionDataByNode[node.ID()] = sessionData{
-				Session: &session,
-				Node:    &node,
+	for _, stakedApp := range stakedAppsWithRelays {
+		wg.Add(1)
+
+		// send each Dispatch request to the protocol concurrently
+		go func(app protocol.App) {
+			defer wg.Done()
+
+			session, err := r.protocol.Dispatch(app)
+			if err != nil {
+				errorsChan <- err
+				return
 			}
-		}
+
+			mu.Lock()
+			for _, node := range session.Nodes() {
+				sessionDataByNode[node.ID()] = sessionData{
+					Session: session,
+					Node:    node,
+				}
+			}
+			mu.Unlock()
+		}(stakedApp)
+	}
+
+	wg.Wait()
+	close(errorsChan)
+
+	if len(errorsChan) > 0 {
+		return nil, <-errorsChan
 	}
 
 	return sessionDataByNode, nil
 }
 
 // constructRelayGroups constructs relay groups for nodes that are in session and have relays.
-func (r *wsRelayer) constructRelayGroups(data relayGroupData) ([]relayGroup, map[cache.NodeKey]struct{}, error) {
-	nodeKeysToClear := make(map[cache.NodeKey]struct{})
-	var relayGroups []relayGroup
+func (r *wsRelayer) constructRelayGroups(data relayGroupData) (relayGroups, error) {
+	var relayGroups relayGroups
 
 	for nodeKey, relayCount := range data.allWSRelays {
 		nodeID, chainID, portalAppID := nodeKey.DecomposeKey()
@@ -278,10 +314,6 @@ func (r *wsRelayer) constructRelayGroups(data relayGroupData) ([]relayGroup, map
 		if !nodeInSession {
 			continue
 		}
-
-		// node keys to clear are the node keys that are in the session;
-		// their relay counts must be cleared from the cache
-		nodeKeysToClear[nodeKey] = struct{}{}
 
 		portalApp, ok := data.portalAppsByID[portalAppID]
 		if !ok {
@@ -319,7 +351,7 @@ func (r *wsRelayer) constructRelayGroups(data relayGroupData) ([]relayGroup, map
 		relayGroups = append(relayGroups, relayGroup)
 	}
 
-	return relayGroups, nodeKeysToClear, nil
+	return relayGroups, nil
 }
 
 func (r *wsRelayer) sendNodeRelay(request relay.RelayRequest, session sessionpkg.Session, node nodepkg.Node) (protocol.ProtocolResponse, relay.RelayLog, error) {
