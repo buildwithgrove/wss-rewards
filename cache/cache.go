@@ -94,11 +94,6 @@ func (a AllWSRelays) Chains() map[types.RelayChainID]struct{} {
 	return chains
 }
 
-func (a AllWSRelays) HasChain(chainID types.RelayChainID) bool {
-	_, ok := a.Chains()[chainID]
-	return ok
-}
-
 func (a AllWSRelays) ToSerializable() map[string]int64 {
 	serializable := make(map[string]int64)
 	for nodeKey, count := range a {
@@ -236,10 +231,6 @@ func (c *Cache) ClearWSRelaysByNodeKeys(nodeKeys map[NodeKey]struct{}) error {
 	}
 
 	return wb.Flush()
-}
-
-func (c *Cache) ClearCache() error {
-	return c.db.DropAll()
 }
 
 func (c *Cache) Close() error {
