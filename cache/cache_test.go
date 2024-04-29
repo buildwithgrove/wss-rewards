@@ -266,6 +266,69 @@ func Test_Cache_SetWSRelays(t *testing.T) {
 	}
 }
 
+func Test_Cache_ClearWSRelaysByNodeKeys(t *testing.T) {
+	tests := []struct {
+		name          string
+		setup         AllWSRelays
+		clearNodeKeys map[NodeKey]struct{}
+		expected      AllWSRelays
+		wantErr       bool
+	}{
+		{
+			name: "should clear specified node keys",
+			setup: AllWSRelays{
+				{NodeID: "node1", ChainID: "chain1", PortalAppID: "app1"}: 100,
+				{NodeID: "node2", ChainID: "chain2", PortalAppID: "app2"}: 200,
+				{NodeID: "node3", ChainID: "chain3", PortalAppID: "app3"}: 300,
+			},
+			clearNodeKeys: map[NodeKey]struct{}{
+				{NodeID: "node1", ChainID: "chain1", PortalAppID: "app1"}: {},
+				{NodeID: "node3", ChainID: "chain3", PortalAppID: "app3"}: {},
+			},
+			expected: AllWSRelays{
+				{NodeID: "node2", ChainID: "chain2", PortalAppID: "app2"}: 200,
+			},
+			wantErr: false,
+		},
+		{
+			name: "should handle empty clear request gracefully",
+			setup: AllWSRelays{
+				{NodeID: "node1", ChainID: "chain1", PortalAppID: "app1"}: 100,
+				{NodeID: "node2", ChainID: "chain2", PortalAppID: "app2"}: 200,
+			},
+			clearNodeKeys: map[NodeKey]struct{}{}, // No keys to clear
+			expected: AllWSRelays{
+				{NodeID: "node1", ChainID: "chain1", PortalAppID: "app1"}: 100,
+				{NodeID: "node2", ChainID: "chain2", PortalAppID: "app2"}: 200,
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			cache, teardown := newTestCache(t)
+			defer teardown()
+
+			err := cache.SetWSRelays(test.setup)
+			c.NoError(err)
+
+			err = cache.ClearWSRelaysByNodeKeys(test.clearNodeKeys)
+			if test.wantErr {
+				c.Error(err)
+			} else {
+				c.NoError(err)
+
+				finalRelays, err := cache.GetAllWSRelays()
+				c.NoError(err)
+				c.Equal(test.expected, finalRelays, "Final relay counts mismatch after clear")
+			}
+		})
+	}
+}
+
 func (m *Cache) getWSRelays(nodeKey NodeKey) (int64, error) {
 	keyString := nodeKey.string()
 

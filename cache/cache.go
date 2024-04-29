@@ -204,6 +204,40 @@ func (c *Cache) SetWSRelays(relays map[NodeKey]int64) error {
 	return wb.Flush()
 }
 
+func (c *Cache) ClearWSRelaysByNodeKeys(nodeKeys map[NodeKey]struct{}) error {
+	wb := c.db.NewWriteBatch()
+	defer wb.Cancel()
+
+	err := c.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := item.Key()
+
+			nodeKey, err := nodeKeyFromString(string(key))
+			if err != nil {
+				return err
+			}
+
+			if _, exists := nodeKeys[nodeKey]; exists {
+				if err := wb.Delete(key); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return wb.Flush()
+}
+
 func (c *Cache) ClearCache() error {
 	return c.db.DropAll()
 }

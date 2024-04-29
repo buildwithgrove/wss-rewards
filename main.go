@@ -3,39 +3,57 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"sync"
+	"time"
 
+	"github.com/pokt-foundation/portal-http-db/v2/client"
+	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/messaging"
+	"github.com/pokt-foundation/portal-middleware/metrics"
+	"github.com/pokt-foundation/portal-middleware/protocol"
 
 	"github.com/pokt-foundation/utils-go/environment"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-rewards/cache"
 	"github.com/pokt-foundation/wss-rewards/messenger"
 	"github.com/pokt-foundation/wss-rewards/metric"
+	relayerPkg "github.com/pokt-foundation/wss-rewards/relayer"
 	"github.com/pokt-foundation/wss-rewards/router"
 	"github.com/pokt-foundation/wss-rewards/subscription"
 )
 
 const (
 	// Required env variables
-	natsURLEnv = "NATS_URL"
-	apiKeysEnv = "API_KEYS"
+	phdURLEnv            = "PHD_BASE_URL"
+	phdAPIKeyEnv         = "PHD_API_KEY"
+	natsURLEnv           = "NATS_URL"
+	apiKeysEnv           = "API_KEYS"
+	gatewayPrivateKeyEnv = "GATEWAY_PRIVATE_KEY"
+	dispatcherURLEnv     = "DISPATCHER_URL"
+	pocketNodeURLEnv     = "POCKET_NODE_URL"
 
 	// Optional env variables
-	relayBatchSizeEnv     = "RELAY_BATCH_SIZE"
+	relayBatchSizeEnv = "RELAY_BATCH_SIZE"
+	dbPathEnv         = "DB_PATH"
+	portEnv           = "PORT"
+
 	defaultRelayBatchSize = 100
-	dbPathEnv             = "DB_PATH"
 	defaultDBPath         = "./tmp/db"
-	portEnv               = "PORT"
 	defaultPort           = "8100"
-	imageTagEnv           = "IMAGE_TAG"
-	defaultImageTag       = "development"
+
+	imageTagEnv     = "IMAGE_TAG"
+	defaultImageTag = "development"
 )
 
 type options struct {
 	// Required env variables
-	natsURL string
-	apiKeys map[string]bool
+	morseConfig protocol.MorseConfig
+	phdBaseURL  string
+	phdAPIKey   string
+	natsURL     string
+	apiKeys     map[string]bool
 	// Optional env variables
 	relayBatchSize int16
 	dbPath         string
@@ -46,8 +64,16 @@ type options struct {
 func gatherOptions() options {
 	return options{
 		// Required env variables
-		natsURL: environment.MustGetString(natsURLEnv),
-		apiKeys: environment.MustGetStringMap(apiKeysEnv, ","),
+		morseConfig: protocol.MorseConfig{
+			GatewayPrivateKey: environment.MustGetString(gatewayPrivateKeyEnv),
+			DispatcherURL:     environment.MustGetString(dispatcherURLEnv),
+			NodeURL:           environment.MustGetString(pocketNodeURLEnv),
+			RelayerPoolSize:   1_000,
+		},
+		phdBaseURL: environment.MustGetString(phdURLEnv),
+		phdAPIKey:  environment.MustGetString(phdAPIKeyEnv),
+		natsURL:    environment.MustGetString(natsURLEnv),
+		apiKeys:    environment.MustGetStringMap(apiKeysEnv, ","),
 		// Optional env variables
 		relayBatchSize: int16(environment.GetInt64(relayBatchSizeEnv, defaultRelayBatchSize)),
 		dbPath:         environment.GetString(dbPathEnv, defaultDBPath),
@@ -56,12 +82,37 @@ func gatherOptions() options {
 	}
 }
 
+func checkPHD(baseURL string) {
+	resp, err := http.Get(fmt.Sprintf("%s/healthz", baseURL))
+	if err != nil {
+		panic(fmt.Sprintf("PHD health Check Failed: %s", err.Error()))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		panic(fmt.Sprintf("PHD health Check Failed: bad status code %d", resp.StatusCode))
+	}
+}
+
 func main() {
 	options := gatherOptions()
 
 	logger := logger.New()
 
-	mutex := sync.Mutex{}
+	mutex := &sync.Mutex{}
+
+	// check if Portal HTTP DB is up and running
+	checkPHD(options.phdBaseURL)
+
+	// init PHD client
+	phdClient, err := client.NewReadOnlyDBClient(client.Config{
+		BaseURL: options.phdBaseURL,
+		APIKey:  options.phdAPIKey,
+		Retries: 3,
+		Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		panic(fmt.Errorf("error setting up phd client: %v", err))
+	}
 
 	// init metrics to report relay metrics
 	metricsExporter := metric.NewMetricExporter()
@@ -95,7 +146,7 @@ func main() {
 	relaySubscriber, err := subscription.NewRelaySubscriber(subscription.RelaySubscriberConfig{
 		Cache:     cache,
 		BatchSize: options.relayBatchSize,
-		Mutex:     &mutex,
+		Mutex:     mutex,
 		Logger:    logger,
 	})
 	if err != nil {
@@ -109,6 +160,37 @@ func main() {
 	}
 
 	go sub.RunSubscribers(context.Background(), subs)
+
+	// init relayer to send relays
+
+	// TODO - does the protocol need the network tracer?
+	var networkTracer metrics.NetworkTracer
+
+	morseProtocol, err := protocol.NewMorseProtocol(options.morseConfig, networkTracer, logger)
+	if err != nil {
+		logger.Error("error creating morse protocol", slog.String("error", err.Error()))
+		return
+	}
+
+	// TODO - add shannon protocol?
+	protocols := map[types.ProtocolID]protocol.PoktProtocol{
+		types.ProtocolMorseMainnet: morseProtocol,
+	}
+
+	protocolRouter := protocol.NewRouter(protocols, logger)
+
+	// TODO - pass relayer to trigger package
+	_ = relayerPkg.NewWSRelayer(relayerPkg.Config{
+		ProtocolID: types.ProtocolMorseMainnet,
+		Protocol:   protocolRouter,
+		Cache:      cache,
+		Backend:    phdClient,
+		// TODO - use recorder to send completed relays to global NATS?
+		Mutex:  mutex,
+		Logger: logger,
+	})
+
+	// init trigger package to trigger sending of websocket relays
 
 	// TODO - run trigger for sending WS Relays on interval or when new session rollover detected
 

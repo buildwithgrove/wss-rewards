@@ -34,16 +34,20 @@ type (
 		protocol   protocol.PoktProtocol
 		cache      iCache
 		backend    iDBReader
-		mu         *sync.Mutex
-		logger     *logger.Logger
+		// TODO - use recorder to send completed relays to global NATS?
+		// recorder   iRecorder
+		mu     *sync.Mutex
+		logger *logger.Logger
 	}
 	Config struct {
 		ProtocolID types.ProtocolID
 		Protocol   protocol.PoktProtocol
 		Cache      iCache
 		Backend    iDBReader
-		Mutex      *sync.Mutex
-		Logger     *logger.Logger
+		// TODO - use recorder to send completed relays to global NATS?
+		// Recorder iRecorder
+		Mutex  *sync.Mutex
+		Logger *logger.Logger
 	}
 	iCache interface {
 		GetAllWSRelays() (cache.AllWSRelays, error)
@@ -53,6 +57,10 @@ type (
 		GetAllChains(ctx context.Context, options ...client.ChainOptions) ([]*types.Chain, error)
 		GetPortalAppsForMiddleware(ctx context.Context) ([]*types.PortalAppLite, error)
 	}
+	// TODO - use recorder to send completed relays to global NATS?
+	// iRecorder interface {
+	// 	RecordRelay(relay metrics.Relay) error
+	// }
 
 	fetchedData struct {
 		chainsByID     map[types.RelayChainID]types.Chain
@@ -84,14 +92,17 @@ type (
 
 func (g relayGroups) getNodeKeys() map[cache.NodeKey]struct{} {
 	nodeKeys := make(map[cache.NodeKey]struct{})
+
 	for _, rg := range g {
 		nodeKey := cache.NodeKey{
-			ChainID:     rg.RelayRequest.Details.Chain.ID,
 			NodeID:      rg.Node.ID(),
+			ChainID:     rg.RelayRequest.Details.Chain.ID,
 			PortalAppID: rg.RelayRequest.Details.UserApplication.ID,
 		}
+
 		nodeKeys[nodeKey] = struct{}{}
 	}
+
 	return nodeKeys
 }
 
