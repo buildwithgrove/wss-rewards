@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/pokt-foundation/portal-http-db/v2/client"
@@ -21,6 +20,7 @@ import (
 	"github.com/pokt-foundation/wss-rewards/metric"
 	relayerPkg "github.com/pokt-foundation/wss-rewards/relayer"
 	"github.com/pokt-foundation/wss-rewards/router"
+	"github.com/pokt-foundation/wss-rewards/scheduler"
 	"github.com/pokt-foundation/wss-rewards/subscription"
 )
 
@@ -35,13 +35,15 @@ const (
 	pocketNodeURLEnv     = "POCKET_NODE_URL"
 
 	// Optional env variables
-	relayBatchSizeEnv = "RELAY_BATCH_SIZE"
-	dbPathEnv         = "DB_PATH"
-	portEnv           = "PORT"
+	relayBatchSizeEnv        = "RELAY_BATCH_SIZE"
+	schedulerIntervalMinsEnv = "SCHEDULER_INTERVAL_MINS"
+	dbPathEnv                = "DB_PATH"
+	portEnv                  = "PORT"
 
-	defaultRelayBatchSize = 100
-	defaultDBPath         = "./tmp/db"
-	defaultPort           = "8100"
+	defaultRelayBatchSize        = 100
+	defaultSchedulerIntervalMins = 30
+	defaultDBPath                = "./tmp/db"
+	defaultPort                  = "8100"
 
 	imageTagEnv     = "IMAGE_TAG"
 	defaultImageTag = "development"
@@ -55,10 +57,11 @@ type options struct {
 	natsURL     string
 	apiKeys     map[string]bool
 	// Optional env variables
-	relayBatchSize int16
-	dbPath         string
-	portEnv        string
-	imageTagEnv    string
+	relayBatchSize    int16
+	schedulerInterval time.Duration
+	dbPath            string
+	portEnv           string
+	imageTagEnv       string
 }
 
 func gatherOptions() options {
@@ -75,10 +78,11 @@ func gatherOptions() options {
 		natsURL:    environment.MustGetString(natsURLEnv),
 		apiKeys:    environment.MustGetStringMap(apiKeysEnv, ","),
 		// Optional env variables
-		relayBatchSize: int16(environment.GetInt64(relayBatchSizeEnv, defaultRelayBatchSize)),
-		dbPath:         environment.GetString(dbPathEnv, defaultDBPath),
-		portEnv:        environment.GetString(portEnv, defaultPort),
-		imageTagEnv:    environment.GetString(imageTagEnv, defaultImageTag),
+		relayBatchSize:    int16(environment.GetInt64(relayBatchSizeEnv, defaultRelayBatchSize)),
+		schedulerInterval: time.Duration(environment.GetInt64(schedulerIntervalMinsEnv, defaultSchedulerIntervalMins)) * time.Minute,
+		dbPath:            environment.GetString(dbPathEnv, defaultDBPath),
+		portEnv:           environment.GetString(portEnv, defaultPort),
+		imageTagEnv:       environment.GetString(imageTagEnv, defaultImageTag),
 	}
 }
 
@@ -98,8 +102,6 @@ func main() {
 
 	logger := logger.New()
 
-	mutex := &sync.Mutex{}
-
 	// check if Portal HTTP DB is up and running
 	checkPHD(options.phdBaseURL)
 
@@ -113,6 +115,10 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("error setting up phd client: %v", err))
 	}
+
+	// create channels to block and resume reading relays in relay subscriber
+	blockCh := make(chan struct{})
+	resumeCh := make(chan struct{})
 
 	// init metrics to report relay metrics
 	metricsExporter := metric.NewMetricExporter()
@@ -128,10 +134,7 @@ func main() {
 	}
 
 	// init NATS messenger to read websockets relay messages from gateway
-	natsOptions := messaging.NATSOptions{
-		Address: options.natsURL,
-	}
-	// TODO - update to correct reporter group
+	natsOptions := messaging.NATSOptions{Address: options.natsURL}
 	messenger, err := messenger.NewSubscriber(natsOptions, "reporter_group.relay", relayMetricsExporter, logger)
 	if err != nil {
 		panic(fmt.Errorf("error setting up subscriber: %v", err))
@@ -146,8 +149,9 @@ func main() {
 	relaySubscriber, err := subscription.NewRelaySubscriber(subscription.RelaySubscriberConfig{
 		Cache:     cache,
 		BatchSize: options.relayBatchSize,
-		Mutex:     mutex,
 		Logger:    logger,
+		BlockCh:   blockCh,
+		ResumeCh:  resumeCh,
 	})
 	if err != nil {
 		panic(fmt.Errorf("error setting up relay subscriber: %v", err))
@@ -179,20 +183,24 @@ func main() {
 
 	protocolRouter := protocol.NewRouter(protocols, logger)
 
-	// TODO - pass relayer to trigger package
-	_ = relayerPkg.NewWSRelayer(relayerPkg.Config{
+	relayer := relayerPkg.NewWSRelayer(relayerPkg.Config{
 		ProtocolID: types.ProtocolMorseMainnet,
 		Protocol:   protocolRouter,
 		Cache:      cache,
 		Backend:    phdClient,
-		// TODO - use recorder to send completed relays to global NATS?
-		Mutex:  mutex,
-		Logger: logger,
+		BlockCh:    blockCh,
+		ResumeCh:   resumeCh,
+		Logger:     logger,
 	})
 
-	// init trigger package to trigger sending of websocket relays
+	// init scheduler package to trigger sending of websocket relays on interval
+	scheduler := scheduler.NewScheduler(scheduler.Config{
+		Relayer:  relayer,
+		Interval: options.schedulerInterval,
+		Logger:   logger,
+	})
 
-	// TODO - run trigger for sending WS Relays on interval or when new session rollover detected
+	go scheduler.Run()
 
 	// init health check router
 	err = router.Start(context.Background(), router.Config{

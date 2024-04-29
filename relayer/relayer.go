@@ -34,20 +34,18 @@ type (
 		protocol   protocol.PoktProtocol
 		cache      iCache
 		backend    iDBReader
-		// TODO - use recorder to send completed relays to global NATS?
-		// recorder   iRecorder
-		mu     *sync.Mutex
-		logger *logger.Logger
+		blockCh    chan struct{}
+		resumeCh   chan struct{}
+		logger     *logger.Logger
 	}
 	Config struct {
 		ProtocolID types.ProtocolID
 		Protocol   protocol.PoktProtocol
 		Cache      iCache
 		Backend    iDBReader
-		// TODO - use recorder to send completed relays to global NATS?
-		// Recorder iRecorder
-		Mutex  *sync.Mutex
-		Logger *logger.Logger
+		BlockCh    chan struct{}
+		ResumeCh   chan struct{}
+		Logger     *logger.Logger
 	}
 	iCache interface {
 		GetAllWSRelays() (cache.AllWSRelays, error)
@@ -79,7 +77,7 @@ type (
 	}
 
 	// relayGroup contains the relay request and session data for a node that is in session and has relays,
-	// as well as how many relays to send to credit the node for handling websocket messages.
+	// as well as how many dummy relays to send to credit the node for handling websocket messages.
 	relayGroup struct {
 		Count        int64
 		RelayRequest relay.RelayRequest
@@ -112,23 +110,24 @@ func NewWSRelayer(config Config) *wsRelayer {
 		protocol:   config.Protocol,
 		cache:      config.Cache,
 		backend:    config.Backend,
-		mu:         config.Mutex,
+		blockCh:    config.BlockCh,
+		resumeCh:   config.ResumeCh,
 		logger:     config.Logger,
 	}
 }
 
-// TODO - determine when to trigger this method - on session rollover? once per hour? TBD.
 func (r *wsRelayer) SendWSRelays() error {
-	// fetch data from other services first to avoid holding the lock for as long as possible
+	// fetch data from other services first to avoid blocking relay subscriber for as long as possible
 	fetchedData, err := r.fetchData()
 	if err != nil {
 		return err
 	}
 
-	// lock mutex to prevent concurrent writes to cache while relays are being sent
-	// TODO - handle locking goroutine in subscriptions so cache can't be updated while relays are sending
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	// send block signal to relay subscriber to block reading from relayCh in messenger until dummy relays are sent
+	r.blockCh <- struct{}{}
+	defer func() {
+		r.resumeCh <- struct{}{}
+	}()
 
 	// get relay groups, which contain relay counts for all nodes with WS relays that are in session
 	relayGroups, err := r.getRelayGroups(fetchedData)
@@ -149,7 +148,7 @@ func (r *wsRelayer) SendWSRelays() error {
 				return
 			}
 
-			// send the total count of relays for the relay group
+			// send the total count of dummy relays for the relay group
 			for i := 0; i < int(rg.Count); i++ {
 				relayRequest := rg.RelayRequest // copy relay request
 
@@ -366,7 +365,7 @@ func (r *wsRelayer) constructRelayGroups(data relayGroupData) (relayGroups, erro
 	return relayGroups, nil
 }
 
-// sendNodeRelay sends a relay to a node to credit them on-chain for websocket messages through the gateway.
+// sendNodeRelay sends a dummy relay to a node to credit them on-chain for websocket messages through the gateway.
 func (r *wsRelayer) sendNodeRelay(request relay.RelayRequest, session sessionpkg.Session, node nodepkg.Node) (protocol.ProtocolResponse, relay.RelayLog, error) {
 	if !session.NodeInSession(node) {
 		return protocol.MorseRelayResponse{}, relay.RelayLog{}, errors.New("could not find node with id " + string(node.ID()))
@@ -389,7 +388,7 @@ func (r *wsRelayer) sendNodeRelay(request relay.RelayRequest, session sessionpkg
 	return output, relayLog, err
 }
 
-// sendNetworkRelay sends a relay to a node to credit them on-chain for websocket messages through the gateway.
+// sendNetworkRelay sends a dummy relay to a node to credit them on-chain for websocket messages through the gateway.
 func (r *wsRelayer) sendNetworkRelay(req relay.RelayRequest, relayLog relay.RelayLog, session sessionpkg.Session, node nodepkg.Node) (protocol.ProtocolResponse, relay.RelayLog, error) {
 	data, err := json.Marshal(req.Relays[0]) // there will only ever be one relay for ws relay requests
 	if err != nil {

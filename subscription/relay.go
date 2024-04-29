@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 
 	ws "github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
@@ -27,14 +26,16 @@ type (
 		relayBatch []ws.WSMetadata
 		cache      ICache
 		batchSize  int16
-		mu         *sync.Mutex
+		blockCh    chan struct{} // Channel to block processing
+		resumeCh   chan struct{} // Channel to resume processing
 		logger     *slog.Logger
 	}
 
 	RelaySubscriberConfig struct {
 		Cache     ICache
 		BatchSize int16
-		Mutex     *sync.Mutex
+		BlockCh   chan struct{}
+		ResumeCh  chan struct{}
 		Logger    *logger.Logger
 	}
 
@@ -48,8 +49,9 @@ func NewRelaySubscriber(config RelaySubscriberConfig) (*RelaySubscriber, error) 
 		cache:      config.Cache,
 		relayBatch: make([]ws.WSMetadata, 0, config.BatchSize),
 		batchSize:  config.BatchSize,
-		mu:         config.Mutex,
-		logger:     config.Logger.With("subscriber", "meter"),
+		blockCh:    config.BlockCh,
+		resumeCh:   config.ResumeCh,
+		logger:     config.Logger.With("subscriber", "relay"),
 	}, nil
 }
 
@@ -63,26 +65,37 @@ func (rs *RelaySubscriber) Subscribe(m iMessenger) error {
 }
 
 func (rs *RelaySubscriber) Process(ctx context.Context) {
-	// TODO - block reading from relay channel when sending of WS relays is initiated
-	for relay := range rs.relayCh {
+	for {
+		select {
+		case <-rs.blockCh:
+			rs.logger.Info("blocking relay subscriber processing to send dummy relays")
+			<-rs.resumeCh
+			rs.logger.Info("resuming relay subscriber processing after sending dummy relays")
 
-		rs.relayBatch = append(rs.relayBatch, relay)
+		case relay, ok := <-rs.relayCh:
+			if !ok {
+				rs.logger.Error("relay channel closed, exiting relay subscriber")
+				return
+			}
 
-		batchFull := len(rs.relayBatch) >= int(rs.batchSize)
+			rs.relayBatch = append(rs.relayBatch, relay)
 
-		if batchFull {
-			var err error
-			for attempt := 0; attempt < retries; attempt++ {
-				if err = rs.persistWSRelays(); err == nil {
-					break
+			batchFull := len(rs.relayBatch) >= int(rs.batchSize)
+
+			if batchFull {
+				var err error
+				for attempt := 0; attempt < retries; attempt++ {
+					if err = rs.persistWSRelays(); err == nil {
+						break
+					}
 				}
-			}
-			if err != nil {
-				rs.logger.Error(fmt.Sprintf("cache write failed after %d retries: %s", retries, err.Error()))
-			}
+				if err != nil {
+					rs.logger.Error(fmt.Sprintf("cache write failed after %d retries: %s", retries, err.Error()))
+				}
 
-			// Clear the batch
-			rs.relayBatch = rs.relayBatch[:0]
+				// Clear the batch
+				rs.relayBatch = rs.relayBatch[:0]
+			}
 		}
 	}
 }
@@ -104,9 +117,6 @@ func (rs *RelaySubscriber) persistWSRelays() error {
 
 		relayMap[key] += 1
 	}
-
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
 
 	err := rs.cache.SetWSRelays(relayMap)
 	if err != nil {

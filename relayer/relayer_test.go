@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -39,7 +38,8 @@ func newTestRelayer(t *testing.T) (*wsRelayer, mocks) {
 		Protocol:   mockProtocol,
 		Cache:      mockCache,
 		Backend:    mockDBReader,
-		Mutex:      &sync.Mutex{},
+		BlockCh:    make(chan struct{}),
+		ResumeCh:   make(chan struct{}),
 		Logger:     logger.New(),
 	}
 
@@ -413,7 +413,7 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 				c.Error(err)
 			} else {
 				c.NoError(err)
-				c.Equal(test.expectedRelayGroups, relayGroups)
+				c.ElementsMatch(test.expectedRelayGroups, relayGroups)
 				c.Equal(test.expectedNodesInSession, relayGroups.getNodeKeys())
 			}
 		})
