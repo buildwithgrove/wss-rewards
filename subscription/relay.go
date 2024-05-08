@@ -2,7 +2,6 @@ package subscription
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -16,17 +15,10 @@ import (
 
 const retries = 3
 
-// TODO - move to cache
-var (
-	ErrNodeIDRequired      = errors.New("node ID is required")
-	ErrChainIDRequired     = errors.New("chain ID is required")
-	ErrPortalAppIDRequired = errors.New("portal app ID is required")
-)
-
 type (
 	RelaySubscriber struct {
 		relayCh    <-chan metrics.Relay
-		relayBatch []wsMetadata
+		relayBatch []relayMetadata
 		cache      ICache
 		batchSize  int16
 		blockCh    chan struct{} // Channel to block processing
@@ -42,7 +34,7 @@ type (
 		Logger    *logger.Logger
 	}
 
-	wsMetadata struct {
+	relayMetadata struct {
 		NodeID      node.ID            `json:"node_id"`
 		PortalAppID types.PortalAppID  `json:"portal_app_id"`
 		ChainID     types.RelayChainID `json:"chain_id"`
@@ -56,7 +48,7 @@ type (
 func NewRelaySubscriber(config RelaySubscriberConfig) (*RelaySubscriber, error) {
 	return &RelaySubscriber{
 		cache:      config.Cache,
-		relayBatch: make([]wsMetadata, 0, config.BatchSize),
+		relayBatch: make([]relayMetadata, 0, config.BatchSize),
 		batchSize:  config.BatchSize,
 		blockCh:    config.BlockCh,
 		resumeCh:   config.ResumeCh,
@@ -73,18 +65,7 @@ func (rs *RelaySubscriber) Subscribe(m iMessenger) error {
 	return nil
 }
 
-func relayIsWebsocketChain(chainID types.RelayChainID) bool {
-	return strings.HasPrefix(string(chainID), "W")
-}
-
-func relayToMetadata(relay metrics.Relay) wsMetadata {
-	return wsMetadata{
-		NodeID:      node.ID(relay.PoktNodePublicKey),
-		PortalAppID: relay.RelayRequest.Details.UserApplication.ID,
-		ChainID:     relay.PoktChainID,
-	}
-}
-
+// TODO - should Process be called in a worker pool as in R2 or is one goroutine sufficient?
 func (rs *RelaySubscriber) Process(ctx context.Context) {
 	for {
 		select {
@@ -122,6 +103,18 @@ func (rs *RelaySubscriber) Process(ctx context.Context) {
 				rs.relayBatch = rs.relayBatch[:0]
 			}
 		}
+	}
+}
+
+func relayIsWebsocketChain(chainID types.RelayChainID) bool {
+	return strings.HasPrefix(string(chainID), "W")
+}
+
+func relayToMetadata(relay metrics.Relay) relayMetadata {
+	return relayMetadata{
+		NodeID:      node.ID(relay.PoktNodePublicKey),
+		PortalAppID: relay.RelayRequest.Details.UserApplication.ID,
+		ChainID:     relay.PoktChainID,
 	}
 }
 
