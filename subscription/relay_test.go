@@ -9,8 +9,9 @@ import (
 
 	"github.com/pokt-foundation/pocket-go/provider"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
+	"github.com/pokt-foundation/portal-middleware/metrics"
 	"github.com/pokt-foundation/portal-middleware/node"
-	ws "github.com/pokt-foundation/portal-middleware/websockets"
+	"github.com/pokt-foundation/portal-middleware/relay"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-rewards/cache"
 
@@ -21,7 +22,7 @@ import (
 func TestRelaySubscriber_Process(t *testing.T) {
 	tests := []struct {
 		name              string
-		relayMessages     []ws.WSMetadata
+		relayMessages     []metrics.Relay
 		batchSize         int16
 		expectedCallCount int
 		blockAt           int // index to block at, -1 if no block
@@ -29,7 +30,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 	}{
 		{
 			name:              "should process 5000 relays and persist with batch size 100",
-			relayMessages:     generateRandomWSMetadata(5_000),
+			relayMessages:     generateRandomWSRelays(5_000),
 			batchSize:         1000,
 			expectedCallCount: 5,
 			blockAt:           -1,
@@ -37,7 +38,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 		},
 		{
 			name:              "should process 12000 relays and persist with batch size 300",
-			relayMessages:     generateRandomWSMetadata(12_000),
+			relayMessages:     generateRandomWSRelays(12_000),
 			batchSize:         3000,
 			expectedCallCount: 4,
 			blockAt:           -1,
@@ -45,7 +46,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 		},
 		{
 			name:              "should block and then resume processing relays",
-			relayMessages:     generateRandomWSMetadata(1_000),
+			relayMessages:     generateRandomWSRelays(1_000),
 			batchSize:         100,
 			expectedCallCount: 10,
 			blockAt:           300, // Block after 300 messages
@@ -70,7 +71,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 			})
 			c.NoError(err)
 
-			relayCh := make(chan ws.WSMetadata, len(test.relayMessages))
+			relayCh := make(chan metrics.Relay, len(test.relayMessages))
 			defer close(relayCh)
 
 			rs.relayCh = relayCh
@@ -115,7 +116,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 	}
 }
 
-func generateRandomWSMetadata(n int) []ws.WSMetadata {
+func generateRandomWSRelays(n int) []metrics.Relay {
 	nodes := make([]node.V0Node, 5)
 	for i := range nodes {
 		nodes[i] = node.V0Node{
@@ -123,9 +124,9 @@ func generateRandomWSMetadata(n int) []ws.WSMetadata {
 		}
 	}
 
-	chains := make([]types.RelayChainID, 10)
+	chains := make([]types.RelayChainID, 9)
 	for i := range chains {
-		chains[i] = types.RelayChainID(fmt.Sprintf("chain_%d", i))
+		chains[i] = types.RelayChainID(fmt.Sprintf("W00%d", i))
 	}
 
 	apps := make([]types.PortalAppLite, 8)
@@ -133,25 +134,25 @@ func generateRandomWSMetadata(n int) []ws.WSMetadata {
 		apps[i] = types.PortalAppLite{ID: types.PortalAppID(fmt.Sprintf("app_%d", i))}
 	}
 
-	metadata := make([]ws.WSMetadata, n)
+	metadata := make([]metrics.Relay, n)
 	for i := 0; i < n; i++ {
-		metadata[i] = ws.WSMetadata{
-			NodeID:      nodes[rand.Intn(len(nodes))].ID(),
-			ChainID:     chains[rand.Intn(len(chains))],
-			PortalAppID: apps[rand.Intn(len(apps))].ID,
+		metadata[i] = metrics.Relay{
+			PoktNodePublicKey: string(nodes[rand.Intn(len(nodes))].ID()),
+			PoktChainID:       chains[rand.Intn(len(chains))],
+			RelayRequest:      metrics.RelayRequest{Details: relay.RelayDetails{UserApplication: apps[rand.Intn(len(apps))]}},
 		}
 	}
 
 	return metadata
 }
 
-func generateExpectedRelaysMap(relays []ws.WSMetadata) map[cache.NodeKey]int64 {
+func generateExpectedRelaysMap(relays []metrics.Relay) map[cache.NodeKey]int64 {
 	expectedRelaysMap := make(map[cache.NodeKey]int64)
 	for _, relay := range relays {
 		key := cache.NodeKey{
-			NodeID:      relay.NodeID,
-			ChainID:     relay.ChainID,
-			PortalAppID: relay.PortalAppID,
+			NodeID:      node.ID(relay.PoktNodePublicKey),
+			ChainID:     relay.PoktChainID,
+			PortalAppID: relay.RelayRequest.Details.UserApplication.ID,
 		}
 		expectedRelaysMap[key]++
 	}

@@ -12,12 +12,12 @@ import (
 	"github.com/pokt-foundation/portal-middleware/backend"
 	"github.com/pokt-foundation/portal-middleware/messaging"
 	"github.com/pokt-foundation/portal-middleware/protocol"
+	"github.com/pokt-foundation/request-reporter/messenger"
+	"github.com/pokt-foundation/request-reporter/metric"
 	"github.com/pokt-foundation/utils-go/environment"
 	"github.com/pokt-foundation/utils-go/logger"
 
 	"github.com/pokt-foundation/wss-rewards/cache"
-	"github.com/pokt-foundation/wss-rewards/messenger"
-	"github.com/pokt-foundation/wss-rewards/metric"
 	relayerPkg "github.com/pokt-foundation/wss-rewards/relayer"
 	"github.com/pokt-foundation/wss-rewards/router"
 	"github.com/pokt-foundation/wss-rewards/scheduler"
@@ -143,7 +143,7 @@ func main() {
 
 	// init NATS messenger to read websockets relay messages from gateway
 	natsOptions := messaging.NATSOptions{Address: options.natsURL}
-	messenger, err := messenger.NewSubscriber(natsOptions, "reporter_group.relay", relayMetricsExporter, logger)
+	messenger, err := messenger.NewSubscriber(natsOptions, "reporter_group.relay", "reporter_group.session", relayMetricsExporter, 100, logger)
 	if err != nil {
 		panic(fmt.Errorf("error setting up subscriber: %v", err))
 	}
