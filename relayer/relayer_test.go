@@ -133,10 +133,10 @@ func Test_Relayer_getSessionData(t *testing.T) {
 
 			relayer, mocks := newTestRelayer(t)
 
-			for stakedApp := range test.stakedApps {
-				if test.expectError {
-					mocks.mockAppInformer.On("Session", stakedApp).Return(session.MorseSession{}, errors.New("dispatch error")).Once()
-				} else {
+			if test.expectError {
+				mocks.mockAppInformer.On("Session", mock.Anything).Return(session.MorseSession{}, errors.New("dispatch error")).Once()
+			} else {
+				for stakedApp := range test.stakedApps {
 					session := getTestSession(stakedApp)
 					mocks.mockAppInformer.On("Session", stakedApp).Return(session, nil).Once()
 				}
