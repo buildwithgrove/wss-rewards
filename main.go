@@ -7,14 +7,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/pokt-foundation/portal-http-db/v2/client"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
+	"github.com/pokt-foundation/portal-middleware/app"
+	"github.com/pokt-foundation/portal-middleware/backend"
 	"github.com/pokt-foundation/portal-middleware/messaging"
-	"github.com/pokt-foundation/portal-middleware/metrics"
 	"github.com/pokt-foundation/portal-middleware/protocol"
-
 	"github.com/pokt-foundation/utils-go/environment"
 	"github.com/pokt-foundation/utils-go/logger"
+
 	"github.com/pokt-foundation/wss-rewards/cache"
 	"github.com/pokt-foundation/wss-rewards/messenger"
 	"github.com/pokt-foundation/wss-rewards/metric"
@@ -37,11 +37,15 @@ const (
 	// Optional env variables
 	relayBatchSizeEnv        = "RELAY_BATCH_SIZE"
 	schedulerIntervalMinsEnv = "SCHEDULER_INTERVAL_MINS"
+	phdUpdateIntervalEnv     = "PHD_UPDATE_INTERVAL"
+	appRefreshIntervalEnv    = "APP_REFRESH_INTERVAL"
 	dbPathEnv                = "DB_PATH"
 	portEnv                  = "PORT"
 
 	defaultRelayBatchSize        = 100
 	defaultSchedulerIntervalMins = 30
+	phdUpdateIntervalDefault     = 300
+	appRefreshIntervalDefault    = 300
 	defaultDBPath                = "./tmp/db"
 	defaultPort                  = "8100"
 
@@ -51,11 +55,11 @@ const (
 
 type options struct {
 	// Required env variables
-	morseConfig protocol.MorseConfig
-	phdBaseURL  string
-	phdAPIKey   string
-	natsURL     string
-	apiKeys     map[string]bool
+	morseConfig       protocol.MorseConfig
+	backendConfig     backend.BackendConfig
+	appInformerConfig app.Config
+	natsURL           string
+	apiKeys           map[string]bool
 	// Optional env variables
 	relayBatchSize    int16
 	schedulerInterval time.Duration
@@ -73,10 +77,19 @@ func gatherOptions() options {
 			NodeURL:           environment.MustGetString(pocketNodeURLEnv),
 			RelayerPoolSize:   1_000,
 		},
-		phdBaseURL: environment.MustGetString(phdURLEnv),
-		phdAPIKey:  environment.MustGetString(phdAPIKeyEnv),
-		natsURL:    environment.MustGetString(natsURLEnv),
-		apiKeys:    environment.MustGetStringMap(apiKeysEnv, ","),
+		backendConfig: backend.BackendConfig{
+			PHDBackendConfig: backend.PHDBackendConfig{
+				BaseURL:             environment.MustGetString(phdURLEnv),
+				APIKey:              environment.MustGetString(phdAPIKeyEnv),
+				CacheUpdateInterval: int(environment.GetInt64(phdUpdateIntervalEnv, phdUpdateIntervalDefault)),
+				GatewayEnv:          "production", // config data not used; hardcoded to avoid error in backend package
+			},
+		},
+		appInformerConfig: app.Config{
+			RefreshInterval: int(environment.GetInt64(appRefreshIntervalEnv, appRefreshIntervalDefault)),
+		},
+		natsURL: environment.MustGetString(natsURLEnv),
+		apiKeys: environment.MustGetStringMap(apiKeysEnv, ","),
 		// Optional env variables
 		relayBatchSize:    int16(environment.GetInt64(relayBatchSizeEnv, defaultRelayBatchSize)),
 		schedulerInterval: time.Duration(environment.GetInt64(schedulerIntervalMinsEnv, defaultSchedulerIntervalMins)) * time.Minute,
@@ -103,15 +116,10 @@ func main() {
 	logger := logger.New()
 
 	// check if Portal HTTP DB is up and running
-	checkPHD(options.phdBaseURL)
+	checkPHD(options.backendConfig.PHDBackendConfig.BaseURL)
 
-	// init PHD client
-	phdClient, err := client.NewReadOnlyDBClient(client.Config{
-		BaseURL: options.phdBaseURL,
-		APIKey:  options.phdAPIKey,
-		Retries: 3,
-		Timeout: 10 * time.Second,
-	})
+	// init PHD backend
+	backend, err := backend.NewBackendProxy(options.backendConfig, logger)
 	if err != nil {
 		panic(fmt.Errorf("error setting up phd client: %v", err))
 	}
@@ -165,32 +173,28 @@ func main() {
 
 	go sub.RunSubscribers(context.Background(), subs)
 
-	// init relayer to send relays
+	// init relayer to send relaysb
 
-	// TODO - does the protocol need the network tracer?
-	var networkTracer metrics.NetworkTracer
-
-	morseProtocol, err := protocol.NewMorseProtocol(options.morseConfig, networkTracer, logger)
+	morseProtocol, err := protocol.NewMorseProtocol(options.morseConfig, nil, logger)
 	if err != nil {
 		logger.Error("error creating morse protocol", slog.String("error", err.Error()))
 		return
 	}
 
-	// TODO - add shannon protocol?
-	protocols := map[types.ProtocolID]protocol.PoktProtocol{
-		types.ProtocolMorseMainnet: morseProtocol,
+	appInformer, err := app.NewInformer(backend, morseProtocol, options.appInformerConfig, nil, nil, metricsExporter, logger)
+	if err != nil {
+		panic(fmt.Errorf("error setting up app informer: %v", err))
 	}
 
-	protocolRouter := protocol.NewRouter(protocols, logger)
-
 	relayer := relayerPkg.NewWSRelayer(relayerPkg.Config{
-		ProtocolID: types.ProtocolMorseMainnet,
-		Protocol:   protocolRouter,
-		Cache:      cache,
-		Backend:    phdClient,
-		BlockCh:    blockCh,
-		ResumeCh:   resumeCh,
-		Logger:     logger,
+		ProtocolID:  types.ProtocolMorseMainnet,
+		Protocol:    morseProtocol,
+		AppInformer: appInformer,
+		Cache:       cache,
+		Backend:     backend,
+		BlockCh:     blockCh,
+		ResumeCh:    resumeCh,
+		Logger:      logger,
 	})
 
 	// init scheduler package to trigger sending of websocket relays on interval

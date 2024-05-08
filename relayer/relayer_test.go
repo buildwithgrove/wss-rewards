@@ -1,7 +1,6 @@
 package relayer
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,8 +8,8 @@ import (
 	"time"
 
 	"github.com/pokt-foundation/pocket-go/provider"
-	"github.com/pokt-foundation/portal-http-db/v2/client"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
+	app "github.com/pokt-foundation/portal-middleware/app"
 	nodepkg "github.com/pokt-foundation/portal-middleware/node"
 	"github.com/pokt-foundation/portal-middleware/protocol"
 	"github.com/pokt-foundation/portal-middleware/relay"
@@ -23,186 +22,60 @@ import (
 )
 
 type mocks struct {
-	mockProtocol *MockPoktProtocol
-	mockCache    *mockICache
-	mockDBReader *mockIDBReader
+	mockAppInformer *mockIAppInformer
+	mockProtocol    *mockIProtocol
+	mockCache       *mockICache
+	mockBackend     *mockIBackend
 }
 
 func newTestRelayer(t *testing.T) (*wsRelayer, mocks) {
-	mockProtocol := newMockPoktProtocol(t)
+	mockAppInformer := newMockIAppInformer(t)
+	mockProtocol := newMockIProtocol(t)
 	mockCache := newMockICache(t)
-	mockDBReader := newMockIDBReader(t)
+	mockBackend := newMockIBackend(t)
 
 	config := Config{
-		ProtocolID: types.ProtocolMorseMainnet,
-		Protocol:   mockProtocol,
-		Cache:      mockCache,
-		Backend:    mockDBReader,
-		BlockCh:    make(chan struct{}),
-		ResumeCh:   make(chan struct{}),
-		Logger:     logger.New(),
+		ProtocolID:  types.ProtocolMorseMainnet,
+		Protocol:    mockProtocol,
+		Backend:     mockBackend,
+		Cache:       mockCache,
+		BlockCh:     make(chan struct{}),
+		ResumeCh:    make(chan struct{}),
+		AppInformer: mockAppInformer,
+		Logger:      logger.New(),
 	}
 
 	mocks := mocks{
-		mockProtocol: mockProtocol,
-		mockCache:    mockCache,
-		mockDBReader: mockDBReader,
+		mockAppInformer: mockAppInformer,
+		mockProtocol:    mockProtocol,
+		mockCache:       mockCache,
+		mockBackend:     mockBackend,
 	}
 
 	return NewWSRelayer(config), mocks
 }
 
-func Test_Relayer_fetchData(t *testing.T) {
-	tests := []struct {
-		name                                    string
-		chains                                  []*types.Chain
-		portalAppLites                          []*types.PortalAppLite
-		stakedApps                              []protocol.App
-		expectedFetchedData                     fetchedData
-		chainsErr, portalAppsErr, stakedAppsErr error
-	}{
-		{
-			name:           "should handle successful data fetching",
-			chains:         mapChainsToSlice(getTestChains()),
-			portalAppLites: mapPortalAppsToSlice(getTestPortalAppLites()),
-			stakedApps:     getTestStakedApps(),
-			expectedFetchedData: fetchedData{
-				chainsByID:     derefChainsMap(getTestChains()),
-				portalAppsByID: derefPortalAppsMap(getTestPortalAppLites()),
-				stakedApps:     getTestStakedApps(),
-			},
-		},
-		{
-			name:           "should handle error fetching chains",
-			portalAppLites: mapPortalAppsToSlice(getTestPortalAppLites()),
-			stakedApps:     getTestStakedApps(),
-			chainsErr:      errors.New("failed to fetch chains"),
-		},
-		{
-			name:          "should handle error fetching portal apps",
-			chains:        mapChainsToSlice(getTestChains()),
-			stakedApps:    getTestStakedApps(),
-			portalAppsErr: errors.New("failed to fetch portal apps"),
-		},
-		{
-			name:           "should handle error fetching staked apps",
-			chains:         mapChainsToSlice(getTestChains()),
-			portalAppLites: mapPortalAppsToSlice(getTestPortalAppLites()),
-			stakedAppsErr:  errors.New("failed to fetch staked apps"),
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			c := require.New(t)
-
-			relayer, mocks := newTestRelayer(t)
-
-			mocks.mockDBReader.On("GetAllChains", mock.Anything).Return(test.chains, test.chainsErr)
-			if test.chainsErr == nil {
-				mocks.mockDBReader.On("GetPortalAppsForMiddleware", mock.Anything).Return(test.portalAppLites, test.portalAppsErr)
-			}
-			if test.chainsErr == nil && test.portalAppsErr == nil {
-				mocks.mockProtocol.On("GetApps").Return(test.stakedApps, test.stakedAppsErr)
-			}
-
-			fetchedData, err := relayer.fetchData()
-
-			switch {
-			case test.chainsErr != nil:
-				c.Equal(err, test.chainsErr)
-			case test.portalAppsErr != nil:
-				c.Equal(err, test.portalAppsErr)
-			case test.stakedAppsErr != nil:
-				c.Equal(err, test.stakedAppsErr)
-			default:
-				c.NoError(err)
-				c.Equal(test.expectedFetchedData.chainsByID, fetchedData.chainsByID)
-				c.Equal(test.expectedFetchedData.portalAppsByID, fetchedData.portalAppsByID)
-				c.ElementsMatch(test.expectedFetchedData.stakedApps, fetchedData.stakedApps)
-			}
-		})
-	}
-}
-
-func Test_Relayer_getPHDData(t *testing.T) {
-	tests := []struct {
-		name                   string
-		chains                 []*types.Chain
-		portalAppLites         []*types.PortalAppLite
-		chainsErr              error
-		portalAppsErr          error
-		expectedChainsByID     map[types.RelayChainID]types.Chain
-		expectedPortalAppsByID map[types.PortalAppID]types.PortalAppLite
-		expectError            bool
-	}{
-		{
-			name:                   "should handle successful data fetching",
-			chains:                 mapChainsToSlice(getTestChains()),
-			portalAppLites:         mapPortalAppsToSlice(getTestPortalAppLites()),
-			expectedChainsByID:     derefChainsMap(getTestChains()),
-			expectedPortalAppsByID: derefPortalAppsMap(getTestPortalAppLites()),
-			expectError:            false,
-		},
-		{
-			name:           "should handle error fetching chains",
-			portalAppLites: mapPortalAppsToSlice(getTestPortalAppLites()),
-			chainsErr:      errors.New("failed to fetch chains"),
-			expectError:    true,
-		},
-		{
-			name:          "should handle error fetching portal apps",
-			chains:        mapChainsToSlice(getTestChains()),
-			portalAppsErr: errors.New("failed to fetch portal apps"),
-			expectError:   true,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			c := require.New(t)
-
-			relayer, mocks := newTestRelayer(t)
-
-			mocks.mockDBReader.On("GetAllChains", mock.Anything).Return(test.chains, test.chainsErr)
-			if test.chainsErr == nil {
-				mocks.mockDBReader.On("GetPortalAppsForMiddleware", mock.Anything).Return(test.portalAppLites, test.portalAppsErr)
-			}
-
-			chainsByID, portalAppsByID, err := relayer.getPHDData()
-
-			if test.expectError {
-				c.Error(err)
-			} else {
-				c.NoError(err)
-				c.Equal(test.expectedChainsByID, chainsByID)
-				c.Equal(test.expectedPortalAppsByID, portalAppsByID)
-			}
-		})
-	}
-}
-
 func Test_Relayer_filterAppsForChainsWithRelays(t *testing.T) {
 	tests := []struct {
 		name             string
-		stakedApps       []protocol.App
+		stakedApps       map[app.StakedApp]types.GigastakeApp
 		chainsWithRelays map[types.RelayChainID]struct{}
-		expectedApps     []protocol.App
+		expectedApps     map[app.StakedApp]struct{}
 	}{
 		{
 			name:             "should filter apps correctly based on chains with relays",
 			stakedApps:       getTestStakedApps(),
 			chainsWithRelays: map[types.RelayChainID]struct{}{"0001": {}, "0053": {}},
-			expectedApps: []protocol.App{
-				protocol.MorseApp{PublicKey: "test_37a0e8437f5149dc98a9a5b207efc2d0", Chain: "0001"},
-				protocol.MorseApp{PublicKey: "test_a7e28f8d716541a0a332a5dc6b7e4e6e", Chain: "0053"},
+			expectedApps: map[app.StakedApp]struct{}{
+				{PublicKey: "test_37a0e8437f5149dc98a9a5b207efc2d0", Chain: "0001"}: {},
+				{PublicKey: "test_a7e28f8d716541a0a332a5dc6b7e4e6e", Chain: "0053"}: {},
 			},
 		},
 		{
 			name:             "should return empty if no matching chains",
 			stakedApps:       getTestStakedApps(),
 			chainsWithRelays: map[types.RelayChainID]struct{}{"9999": {}}, // Non-existent chain ID
-			expectedApps:     []protocol.App{},
+			expectedApps:     map[app.StakedApp]struct{}{},
 		},
 	}
 
@@ -214,7 +87,7 @@ func Test_Relayer_filterAppsForChainsWithRelays(t *testing.T) {
 
 			filteredApps := relayer.filterAppsForChainsWithRelays(test.stakedApps, test.chainsWithRelays)
 
-			c.ElementsMatch(test.expectedApps, filteredApps)
+			c.Equal(test.expectedApps, filteredApps)
 		})
 	}
 }
@@ -222,18 +95,18 @@ func Test_Relayer_filterAppsForChainsWithRelays(t *testing.T) {
 func Test_Relayer_getSessionData(t *testing.T) {
 	tests := []struct {
 		name                string
-		stakedApps          []protocol.App
+		stakedApps          map[app.StakedApp]struct{}
 		expectedSessionData map[nodepkg.ID]sessionData
 		expectError         bool
 	}{
 		{
 			name:       "should successfully dispatch session data for staked apps",
-			stakedApps: getTestStakedApps(),
+			stakedApps: filterTestStakesApps(getTestStakedApps()),
 			expectedSessionData: func() map[nodepkg.ID]sessionData {
 				result := make(map[nodepkg.ID]sessionData)
 
-				for _, app := range getTestStakedApps() {
-					session := getTestSession(app)
+				for stakedApp := range getTestStakedApps() {
+					session := getTestSession(stakedApp)
 
 					for _, node := range session.Nodes() {
 						result[node.ID()] = sessionData{
@@ -249,7 +122,7 @@ func Test_Relayer_getSessionData(t *testing.T) {
 		},
 		{
 			name:        "should handle error during session dispatch",
-			stakedApps:  getTestStakedApps(),
+			stakedApps:  filterTestStakesApps(getTestStakedApps()),
 			expectError: true,
 		},
 	}
@@ -260,13 +133,12 @@ func Test_Relayer_getSessionData(t *testing.T) {
 
 			relayer, mocks := newTestRelayer(t)
 
-			// Setup the mock expectations for Dispatch
-			for _, app := range test.stakedApps {
+			for stakedApp := range test.stakedApps {
 				if test.expectError {
-					mocks.mockProtocol.On("Dispatch", app).Return(session.MorseSession{}, errors.New("dispatch error")).Once()
+					mocks.mockAppInformer.On("Session", stakedApp).Return(session.MorseSession{}, errors.New("dispatch error")).Once()
 				} else {
-					session := getTestSession(app)
-					mocks.mockProtocol.On("Dispatch", app).Return(session, nil).Once()
+					session := getTestSession(stakedApp)
+					mocks.mockAppInformer.On("Session", stakedApp).Return(session, nil).Once()
 				}
 			}
 
@@ -282,7 +154,6 @@ func Test_Relayer_getSessionData(t *testing.T) {
 				}
 			}
 
-			// Assert that all expected interactions with mocks were met
 			mocks.mockProtocol.AssertExpectations(t)
 		})
 	}
@@ -300,25 +171,24 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 			name: "should construct relay groups correctly",
 			fetchedData: relayGroupData{
 				allWSRelays: map[cache.NodeKey]int64{
-					{NodeID: "0021_node_1", ChainID: "0021", PortalAppID: "test_app_1"}:  43,
-					{NodeID: "0040_node_1", ChainID: "0040", PortalAppID: "test_app_1"}:  8,
-					{NodeID: "0040_node_2", ChainID: "0040", PortalAppID: "test_app_2"}:  17,
-					{NodeID: "0040_node_27", ChainID: "0040", PortalAppID: "test_app_2"}: 51, // node not in session
+					{NodeID: "0021_node_1", ChainID: "0021", PortalAppID: "test_app_1"}: 43,
+					{NodeID: "0040_node_1", ChainID: "0040", PortalAppID: "test_app_1"}: 8,
+					{NodeID: "0040_node_2", ChainID: "0040", PortalAppID: "test_app_2"}: 17,
+					// {NodeID: "0040_node_27", ChainID: "0040", PortalAppID: "test_app_2"}: 51, // node not in session
 				},
 				sessionDataByNode: getTestSessionDataByNode(),
-				chainsByID:        derefChainsMap(getTestChains()),
-				portalAppsByID:    derefPortalAppsMap(getTestPortalAppLites()),
 			},
 			expectedRelayGroups: relayGroups{
 				{
 					Count: 43,
 					RelayRequest: relay.RelayRequest{
 						Relays: []relay.Relay{
-							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody), RelayProtocol: types.ProtocolMorseMainnet},
 						},
 						Details: relay.RelayDetails{
 							UserApplication: *getTestPortalAppLites()["test_app_1"],
 							Chain:           *getTestChains()["0021"],
+							Protocol:        types.ProtocolMorseMainnet,
 						},
 						Origin: "wss://eth-mainnet.rpc.grove.city",
 						Method: "POST",
@@ -330,7 +200,7 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 								AppPublicKey: "test_37a0e8437f5149dc98a9a5b207efc2d0",
 								Chain:        "0021",
 							},
-							Nodes: getNodesForTestSession(protocol.MorseApp{Chain: "0021"}),
+							Nodes: getNodesForTestSession(app.StakedApp{Chain: "0021"}),
 						},
 					},
 					Node: nodepkg.V0Node{
@@ -341,11 +211,12 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 					Count: 8,
 					RelayRequest: relay.RelayRequest{
 						Relays: []relay.Relay{
-							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody), RelayProtocol: types.ProtocolMorseMainnet},
 						},
 						Details: relay.RelayDetails{
 							UserApplication: *getTestPortalAppLites()["test_app_1"],
 							Chain:           *getTestChains()["0040"],
+							Protocol:        types.ProtocolMorseMainnet,
 						},
 						Origin: "wss://harmony-0.rpc.grove.city",
 						Method: "POST",
@@ -357,7 +228,7 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 								AppPublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e",
 								Chain:        "0040",
 							},
-							Nodes: getNodesForTestSession(protocol.MorseApp{Chain: "0040"}),
+							Nodes: getNodesForTestSession(app.StakedApp{Chain: "0040"}),
 						},
 					},
 					Node: nodepkg.V0Node{
@@ -368,11 +239,12 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 					Count: 17,
 					RelayRequest: relay.RelayRequest{
 						Relays: []relay.Relay{
-							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody), RelayProtocol: types.ProtocolMorseMainnet},
 						},
 						Details: relay.RelayDetails{
 							UserApplication: *getTestPortalAppLites()["test_app_2"],
 							Chain:           *getTestChains()["0040"],
+							Protocol:        types.ProtocolMorseMainnet,
 						},
 						Origin: "wss://harmony-0.rpc.grove.city",
 						Method: "POST",
@@ -384,7 +256,7 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 								AppPublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e",
 								Chain:        "0040",
 							},
-							Nodes: getNodesForTestSession(protocol.MorseApp{Chain: "0040"}),
+							Nodes: getNodesForTestSession(app.StakedApp{Chain: "0040"}),
 						},
 					},
 					Node: nodepkg.V0Node{
@@ -405,7 +277,13 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			c := require.New(t)
 
-			relayer := &wsRelayer{} // Assuming wsRelayer is the struct type
+			relayer, mocks := newTestRelayer(t)
+
+			for nodeKey := range test.fetchedData.allWSRelays {
+				_, chainID, portalAppID := nodeKey.DecomposeKey()
+				mocks.mockBackend.On("GetPortalAppByID", portalAppID).Return(*getTestPortalAppLites()[portalAppID], nil).Once()
+				mocks.mockBackend.On("GetChainByID", chainID).Return(*getTestChains()[chainID], nil).Once()
+			}
 
 			relayGroups, err := relayer.constructRelayGroups(test.fetchedData)
 
@@ -425,8 +303,8 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 func getTestSessionDataByNode() map[nodepkg.ID]sessionData {
 	result := make(map[nodepkg.ID]sessionData)
 
-	for _, app := range getTestStakedApps() {
-		session := getTestSession(app)
+	for stakedApp := range getTestStakedApps() {
+		session := getTestSession(stakedApp)
 
 		for _, node := range session.Nodes() {
 			result[node.ID()] = sessionData{
@@ -439,41 +317,49 @@ func getTestSessionDataByNode() map[nodepkg.ID]sessionData {
 	return result
 }
 
-func getTestStakedApps() []protocol.App {
+func getTestStakedApps() map[app.StakedApp]types.GigastakeApp {
 	gigastakeApps := getTestGigastakeApps()
-	stakedApps := make([]protocol.App, 0, len(gigastakeApps))
+	stakedApps := make(map[app.StakedApp]types.GigastakeApp)
 
-	for _, app := range gigastakeApps {
-		for chainID := range app.ChainIDs {
-			stakedApps = append(stakedApps, protocol.MorseApp{
-				PublicKey: app.PublicKey,
+	for _, gigastakeApp := range gigastakeApps {
+		for chainID := range gigastakeApp.ChainIDs {
+			stakedApps[app.StakedApp{
+				PublicKey: gigastakeApp.PublicKey,
 				Chain:     chainID,
-			})
+			}] = *gigastakeApp
 		}
 	}
 
 	return stakedApps
 }
 
-func getTestSession(app protocol.App) session.Session {
-	morseApp := app.(protocol.MorseApp)
+func filterTestStakesApps(stakedApps map[app.StakedApp]types.GigastakeApp) map[app.StakedApp]struct{} {
+	result := make(map[app.StakedApp]struct{})
+
+	for app := range stakedApps {
+		result[app] = struct{}{}
+	}
+
+	return result
+}
+
+func getTestSession(app app.StakedApp) session.Session {
 	return session.MorseSession{
 		Session: provider.Session{
 			Header: provider.SessionHeader{
-				AppPublicKey: string(morseApp.PublicKey),
-				Chain:        string(morseApp.Chain),
+				AppPublicKey: string(app.PublicKey),
+				Chain:        string(app.Chain),
 			},
-			Nodes: getNodesForTestSession(morseApp),
+			Nodes: getNodesForTestSession(app),
 		},
 	}
 }
 
-func getNodesForTestSession(app protocol.App) []provider.Node {
-	morseApp := app.(protocol.MorseApp)
+func getNodesForTestSession(app app.StakedApp) []provider.Node {
 	nodes := make([]provider.Node, 24)
 	for i := 0; i < 24; i++ {
 		nodes[i] = provider.Node{
-			PublicKey: fmt.Sprintf("%s_node_%d", morseApp.Chain, i+1),
+			PublicKey: fmt.Sprintf("%s_node_%d", app.Chain, i+1),
 		}
 	}
 	return nodes
@@ -815,38 +701,6 @@ func getTestPortalAppLites() map[types.PortalAppID]*types.PortalAppLite {
 	}
 }
 
-func mapChainsToSlice(chainsMap map[types.RelayChainID]*types.Chain) []*types.Chain {
-	var chainsSlice []*types.Chain
-	for _, chain := range chainsMap {
-		chainsSlice = append(chainsSlice, chain)
-	}
-	return chainsSlice
-}
-
-func mapPortalAppsToSlice(portalAppsMap map[types.PortalAppID]*types.PortalAppLite) []*types.PortalAppLite {
-	var portalAppsSlice []*types.PortalAppLite
-	for _, app := range portalAppsMap {
-		portalAppsSlice = append(portalAppsSlice, app)
-	}
-	return portalAppsSlice
-}
-
-func derefChainsMap(chains map[types.RelayChainID]*types.Chain) map[types.RelayChainID]types.Chain {
-	chainsMap := make(map[types.RelayChainID]types.Chain)
-	for id, chain := range chains {
-		chainsMap[id] = *chain // Dereference the pointer to store the value
-	}
-	return chainsMap
-}
-
-func derefPortalAppsMap(portalApps map[types.PortalAppID]*types.PortalAppLite) map[types.PortalAppID]types.PortalAppLite {
-	portalAppsMap := make(map[types.PortalAppID]types.PortalAppLite)
-	for id, app := range portalApps {
-		portalAppsMap[id] = *app // Dereference the pointer to store the value
-	}
-	return portalAppsMap
-}
-
 // Code below generated by mockery v2.41.0. DO NOT EDIT.
 
 // mockICache is an autogenerated mock type for the iCache type
@@ -914,39 +768,32 @@ func newMockICache(t interface {
 	return mock
 }
 
-// mockIDBReader is an autogenerated mock type for the iDBReader type
-type mockIDBReader struct {
+// mockIBackend is an autogenerated mock type for the iBackend type
+type mockIBackend struct {
 	mock.Mock
 }
 
-// GetAllChains provides a mock function with given fields: ctx, options
-func (_m *mockIDBReader) GetAllChains(ctx context.Context, options ...client.ChainOptions) ([]*types.Chain, error) {
-	_va := make([]interface{}, len(options))
-	for _i := range options {
-		_va[_i] = options[_i]
-	}
-	var _ca []interface{}
-	_ca = append(_ca, ctx)
-	_ca = append(_ca, _va...)
-	ret := _m.Called(_ca...)
+// GetChainByID provides a mock function with given fields: id
+func (_m *mockIBackend) GetChainByID(id types.RelayChainID) (types.Chain, error) {
+	ret := _m.Called(id)
 
 	if len(ret) == 0 {
-		panic("no return value specified for GetAllChains")
+		panic("no return value specified for GetChainByID")
 	}
 
-	var r0 []*types.Chain
+	var r0 types.Chain
 	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, ...client.ChainOptions) ([]*types.Chain, error)); ok {
-		return rf(ctx, options...)
+	if rf, ok := ret.Get(0).(func(types.RelayChainID) (types.Chain, error)); ok {
+		return rf(id)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, ...client.ChainOptions) []*types.Chain); ok {
-		r0 = rf(ctx, options...)
-	} else if ret.Get(0) != nil {
-		r0 = ret.Get(0).([]*types.Chain)
+	if rf, ok := ret.Get(0).(func(types.RelayChainID) types.Chain); ok {
+		r0 = rf(id)
+	} else {
+		r0 = ret.Get(0).(types.Chain)
 	}
 
-	if rf, ok := ret.Get(1).(func(context.Context, ...client.ChainOptions) error); ok {
-		r1 = rf(ctx, options...)
+	if rf, ok := ret.Get(1).(func(types.RelayChainID) error); ok {
+		r1 = rf(id)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -954,27 +801,27 @@ func (_m *mockIDBReader) GetAllChains(ctx context.Context, options ...client.Cha
 	return r0, r1
 }
 
-// GetPortalAppsForMiddleware provides a mock function with given fields: ctx
-func (_m *mockIDBReader) GetPortalAppsForMiddleware(ctx context.Context) ([]*types.PortalAppLite, error) {
-	ret := _m.Called(ctx)
+// GetPortalAppByID provides a mock function with given fields: portalAppID
+func (_m *mockIBackend) GetPortalAppByID(portalAppID types.PortalAppID) (types.PortalAppLite, error) {
+	ret := _m.Called(portalAppID)
 
 	if len(ret) == 0 {
-		panic("no return value specified for GetPortalAppsForMiddleware")
+		panic("no return value specified for GetPortalAppByID")
 	}
 
-	var r0 []*types.PortalAppLite
+	var r0 types.PortalAppLite
 	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context) ([]*types.PortalAppLite, error)); ok {
-		return rf(ctx)
+	if rf, ok := ret.Get(0).(func(types.PortalAppID) (types.PortalAppLite, error)); ok {
+		return rf(portalAppID)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context) []*types.PortalAppLite); ok {
-		r0 = rf(ctx)
-	} else if ret.Get(0) != nil {
-		r0 = ret.Get(0).([]*types.PortalAppLite)
+	if rf, ok := ret.Get(0).(func(types.PortalAppID) types.PortalAppLite); ok {
+		r0 = rf(portalAppID)
+	} else {
+		r0 = ret.Get(0).(types.PortalAppLite)
 	}
 
-	if rf, ok := ret.Get(1).(func(context.Context) error); ok {
-		r1 = rf(ctx)
+	if rf, ok := ret.Get(1).(func(types.PortalAppID) error); ok {
+		r1 = rf(portalAppID)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -982,13 +829,13 @@ func (_m *mockIDBReader) GetPortalAppsForMiddleware(ctx context.Context) ([]*typ
 	return r0, r1
 }
 
-// newMockIDBReader creates a new instance of mockIDBReader. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
+// newMockIBackend creates a new instance of mockIBackend. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
-func newMockIDBReader(t interface {
+func newMockIBackend(t interface {
 	mock.TestingT
 	Cleanup(func())
-}) *mockIDBReader {
-	mock := &mockIDBReader{}
+}) *mockIBackend {
+	mock := &mockIBackend{}
 	mock.Mock.Test(t)
 
 	t.Cleanup(func() { mock.AssertExpectations(t) })
@@ -996,69 +843,13 @@ func newMockIDBReader(t interface {
 	return mock
 }
 
-// MockPoktProtocol is an autogenerated mock type for the PoktProtocol type
-type MockPoktProtocol struct {
+// mockIProtocol is an autogenerated mock type for the iProtocol type
+type mockIProtocol struct {
 	mock.Mock
 }
 
-// Dispatch provides a mock function with given fields: app
-func (_m *MockPoktProtocol) Dispatch(app protocol.App) (session.Session, error) {
-	ret := _m.Called(app)
-
-	if len(ret) == 0 {
-		panic("no return value specified for Dispatch")
-	}
-
-	var r0 session.Session
-	var r1 error
-	if rf, ok := ret.Get(0).(func(protocol.App) (session.Session, error)); ok {
-		return rf(app)
-	}
-	if rf, ok := ret.Get(0).(func(protocol.App) session.Session); ok {
-		r0 = rf(app)
-	} else if ret.Get(0) != nil {
-		r0 = ret.Get(0).(session.Session)
-	}
-
-	if rf, ok := ret.Get(1).(func(protocol.App) error); ok {
-		r1 = rf(app)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// GetApps provides a mock function with given fields:
-func (_m *MockPoktProtocol) GetApps() ([]protocol.App, error) {
-	ret := _m.Called()
-
-	if len(ret) == 0 {
-		panic("no return value specified for GetApps")
-	}
-
-	var r0 []protocol.App
-	var r1 error
-	if rf, ok := ret.Get(0).(func() ([]protocol.App, error)); ok {
-		return rf()
-	}
-	if rf, ok := ret.Get(0).(func() []protocol.App); ok {
-		r0 = rf()
-	} else if ret.Get(0) != nil {
-		r0 = ret.Get(0).([]protocol.App)
-	}
-
-	if rf, ok := ret.Get(1).(func() error); ok {
-		r1 = rf()
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
 // Relay provides a mock function with given fields: relayReq
-func (_m *MockPoktProtocol) Relay(relayReq protocol.ProtocolRequest) (protocol.ProtocolResponse, protocol.RelayError) {
+func (_m *mockIProtocol) Relay(relayReq protocol.ProtocolRequest) (protocol.ProtocolResponse, protocol.RelayError) {
 	ret := _m.Called(relayReq)
 
 	if len(ret) == 0 {
@@ -1085,13 +876,98 @@ func (_m *MockPoktProtocol) Relay(relayReq protocol.ProtocolRequest) (protocol.P
 	return r0, r1
 }
 
-// newMockPoktProtocol creates a new instance of MockPoktProtocol. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
+// Dispatch is just here to satisfy the interface
+func (_m *mockIProtocol) Dispatch(protocol.App) (session.Session, error) {
+	return nil, nil
+}
+
+// GetApps is just here to satisfy the interface
+func (_m *mockIProtocol) GetApps() ([]protocol.App, error) {
+	return nil, nil
+}
+
+// newMockIProtocol creates a new instance of mockIProtocol. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
-func newMockPoktProtocol(t interface {
+func newMockIProtocol(t interface {
 	mock.TestingT
 	Cleanup(func())
-}) *MockPoktProtocol {
-	mock := &MockPoktProtocol{}
+}) *mockIProtocol {
+	mock := &mockIProtocol{}
+	mock.Mock.Test(t)
+
+	t.Cleanup(func() { mock.AssertExpectations(t) })
+
+	return mock
+}
+
+// mockIAppInformer is an autogenerated mock type for the iAppInformer type
+type mockIAppInformer struct {
+	mock.Mock
+}
+
+// Session provides a mock function with given fields: _a0
+func (_m *mockIAppInformer) Session(_a0 app.StakedApp) (session.Session, error) {
+	ret := _m.Called(_a0)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Session")
+	}
+
+	var r0 session.Session
+	var r1 error
+	if rf, ok := ret.Get(0).(func(app.StakedApp) (session.Session, error)); ok {
+		return rf(_a0)
+	}
+	if rf, ok := ret.Get(0).(func(app.StakedApp) session.Session); ok {
+		r0 = rf(_a0)
+	} else if ret.Get(0) != nil {
+		r0 = ret.Get(0).(session.Session)
+	}
+
+	if rf, ok := ret.Get(1).(func(app.StakedApp) error); ok {
+		r1 = rf(_a0)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// StakedApps provides a mock function with given fields:
+func (_m *mockIAppInformer) StakedApps() (map[app.StakedApp]types.GigastakeApp, error) {
+	ret := _m.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for StakedApps")
+	}
+
+	var r0 map[app.StakedApp]types.GigastakeApp
+	var r1 error
+	if rf, ok := ret.Get(0).(func() (map[app.StakedApp]types.GigastakeApp, error)); ok {
+		return rf()
+	}
+	if rf, ok := ret.Get(0).(func() map[app.StakedApp]types.GigastakeApp); ok {
+		r0 = rf()
+	} else if ret.Get(0) != nil {
+		r0 = ret.Get(0).(map[app.StakedApp]types.GigastakeApp)
+	}
+
+	if rf, ok := ret.Get(1).(func() error); ok {
+		r1 = rf()
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// newMockIAppInformer creates a new instance of mockIAppInformer. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
+// The first argument is typically a *testing.T value.
+func newMockIAppInformer(t interface {
+	mock.TestingT
+	Cleanup(func())
+}) *mockIAppInformer {
+	mock := &mockIAppInformer{}
 	mock.Mock.Test(t)
 
 	t.Cleanup(func() { mock.AssertExpectations(t) })

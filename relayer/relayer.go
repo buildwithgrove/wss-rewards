@@ -1,18 +1,16 @@
 package relayer
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
 	"net/http"
-	"sync"
 	"time"
 
-	"github.com/pokt-foundation/portal-http-db/v2/client"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
+	"github.com/pokt-foundation/portal-middleware/app"
 	nodepkg "github.com/pokt-foundation/portal-middleware/node"
 	"github.com/pokt-foundation/portal-middleware/protocol"
 	"github.com/pokt-foundation/portal-middleware/relay"
@@ -30,41 +28,42 @@ const (
 
 type (
 	wsRelayer struct {
-		protocolID types.ProtocolID
-		protocol   protocol.PoktProtocol
-		cache      iCache
-		backend    iDBReader
-		blockCh    chan struct{}
-		resumeCh   chan struct{}
-		logger     *logger.Logger
+		protocolID  types.ProtocolID
+		protocol    iProtocol
+		cache       iCache
+		backend     iBackend
+		appInformer iAppInformer
+		blockCh     chan struct{}
+		resumeCh    chan struct{}
+		logger      *logger.Logger
 	}
 	Config struct {
-		ProtocolID types.ProtocolID
-		Protocol   protocol.PoktProtocol
-		Cache      iCache
-		Backend    iDBReader
-		BlockCh    chan struct{}
-		ResumeCh   chan struct{}
-		Logger     *logger.Logger
+		ProtocolID  types.ProtocolID
+		Protocol    protocol.PoktProtocol
+		Cache       iCache
+		Backend     iBackend
+		BlockCh     chan struct{}
+		ResumeCh    chan struct{}
+		AppInformer iAppInformer
+		Logger      *logger.Logger
+	}
+
+	iProtocol interface {
+		Relay(relayReq protocol.ProtocolRequest) (protocol.ProtocolResponse, protocol.RelayError)
+	}
+	iAppInformer interface {
+		StakedApps() (map[app.StakedApp]types.GigastakeApp, error)
+		Session(app app.StakedApp) (sessionpkg.Session, error)
 	}
 	iCache interface {
 		GetAllWSRelays() (cache.AllWSRelays, error)
 		ClearWSRelaysByNodeKeys(nodeKeys map[cache.NodeKey]struct{}) error
 	}
-	iDBReader interface {
-		GetAllChains(ctx context.Context, options ...client.ChainOptions) ([]*types.Chain, error)
-		GetPortalAppsForMiddleware(ctx context.Context) ([]*types.PortalAppLite, error)
+	iBackend interface {
+		GetChainByID(id types.RelayChainID) (types.Chain, error)
+		GetPortalAppByID(portalAppID types.PortalAppID) (types.PortalAppLite, error)
 	}
-	// TODO - use recorder to send completed relays to global NATS?
-	// iRecorder interface {
-	// 	RecordRelay(relay metrics.Relay) error
-	// }
 
-	fetchedData struct {
-		chainsByID     map[types.RelayChainID]types.Chain
-		portalAppsByID map[types.PortalAppID]types.PortalAppLite
-		stakedApps     []protocol.App
-	}
 	sessionData struct {
 		Session sessionpkg.Session
 		Node    nodepkg.Node
@@ -72,8 +71,6 @@ type (
 	relayGroupData struct {
 		allWSRelays       cache.AllWSRelays
 		sessionDataByNode map[nodepkg.ID]sessionData
-		chainsByID        map[types.RelayChainID]types.Chain
-		portalAppsByID    map[types.PortalAppID]types.PortalAppLite
 	}
 
 	// relayGroup contains the relay request and session data for a node that is in session and has relays,
@@ -106,31 +103,31 @@ func (g relayGroups) getNodeKeys() map[cache.NodeKey]struct{} {
 
 func NewWSRelayer(config Config) *wsRelayer {
 	return &wsRelayer{
-		protocolID: config.ProtocolID,
-		protocol:   config.Protocol,
-		cache:      config.Cache,
-		backend:    config.Backend,
-		blockCh:    config.BlockCh,
-		resumeCh:   config.ResumeCh,
-		logger:     config.Logger,
+		protocolID:  config.ProtocolID,
+		protocol:    config.Protocol,
+		cache:       config.Cache,
+		backend:     config.Backend,
+		blockCh:     config.BlockCh,
+		resumeCh:    config.ResumeCh,
+		appInformer: config.AppInformer,
+		logger:      config.Logger,
 	}
 }
 
 func (r *wsRelayer) SendWSRelays() error {
-	// fetch data from other services first to avoid blocking relay subscriber for as long as possible
-	fetchedData, err := r.fetchData()
-	if err != nil {
-		return err
-	}
-
 	// send block signal to relay subscriber to block reading from relayCh in messenger until dummy relays are sent
 	r.blockCh <- struct{}{}
 	defer func() {
 		r.resumeCh <- struct{}{}
 	}()
 
+	stakedApps, err := r.appInformer.StakedApps()
+	if err != nil {
+		return err
+	}
+
 	// get relay groups, which contain relay counts for all nodes with WS relays that are in session
-	relayGroups, err := r.getRelayGroups(fetchedData)
+	relayGroups, err := r.getRelayGroups(stakedApps)
 	if err != nil {
 		return err
 	}
@@ -183,51 +180,8 @@ func (r *wsRelayer) SendWSRelays() error {
 	return nil
 }
 
-// fetchData fetches all data that must be fetched from other services.
-// This includes chains & portal apps from PHD and staked apps from the protocol.
-func (r *wsRelayer) fetchData() (fetchedData, error) {
-	chainsByID, portalAppsByID, err := r.getPHDData()
-	if err != nil {
-		return fetchedData{}, err
-	}
-
-	stakedApps, err := r.protocol.GetApps()
-	if err != nil {
-		return fetchedData{}, err
-	}
-
-	return fetchedData{
-		chainsByID:     chainsByID,
-		portalAppsByID: portalAppsByID,
-		stakedApps:     stakedApps,
-	}, nil
-}
-
-// getPHDData fetches chains and portal apps from PHD.
-func (r *wsRelayer) getPHDData() (map[types.RelayChainID]types.Chain, map[types.PortalAppID]types.PortalAppLite, error) {
-	chains, err := r.backend.GetAllChains(context.Background())
-	if err != nil {
-		return nil, nil, err
-	}
-	chainsByID := make(map[types.RelayChainID]types.Chain, len(chains))
-	for _, chain := range chains {
-		chainsByID[chain.ID] = *chain
-	}
-
-	portalApps, err := r.backend.GetPortalAppsForMiddleware(context.Background())
-	if err != nil {
-		return nil, nil, err
-	}
-	portalAppsByID := make(map[types.PortalAppID]types.PortalAppLite, len(portalApps))
-	for _, app := range portalApps {
-		portalAppsByID[app.ID] = *app
-	}
-
-	return chainsByID, portalAppsByID, nil
-}
-
 // getRelayGroups orchestrates the process of getting relay groups.
-func (r *wsRelayer) getRelayGroups(data fetchedData) (relayGroups, error) {
+func (r *wsRelayer) getRelayGroups(stakedApps map[app.StakedApp]types.GigastakeApp) (relayGroups, error) {
 	// get all websocket relays from the cache
 	allWSRelays, err := r.cache.GetAllWSRelays()
 	if err != nil {
@@ -239,7 +193,7 @@ func (r *wsRelayer) getRelayGroups(data fetchedData) (relayGroups, error) {
 	}
 
 	// filter staked apps to only include those staked for chains that have relays
-	stakedAppsWithRelays := r.filterAppsForChainsWithRelays(data.stakedApps, allWSRelays.Chains())
+	stakedAppsWithRelays := r.filterAppsForChainsWithRelays(stakedApps, allWSRelays.Chains())
 
 	// get sessions and nodes, mapped by node IDs
 	sessionDataByNode, err := r.getSessionData(stakedAppsWithRelays)
@@ -250,22 +204,20 @@ func (r *wsRelayer) getRelayGroups(data fetchedData) (relayGroups, error) {
 	relayGroupData := relayGroupData{
 		allWSRelays:       allWSRelays,
 		sessionDataByNode: sessionDataByNode,
-		chainsByID:        data.chainsByID,
-		portalAppsByID:    data.portalAppsByID,
 	}
 
 	return r.constructRelayGroups(relayGroupData)
 }
 
 // filterAppsForChainsWithRelays ensures only staked apps for chains with relays are returned.
-func (r *wsRelayer) filterAppsForChainsWithRelays(stakedApps []protocol.App, chainsWithRelays map[types.RelayChainID]struct{}) []protocol.App {
-	var stakedAppsWithRelays []protocol.App
+func (r *wsRelayer) filterAppsForChainsWithRelays(stakedApps map[app.StakedApp]types.GigastakeApp, chainsWithRelays map[types.RelayChainID]struct{}) map[app.StakedApp]struct{} {
+	stakedAppsWithRelays := make(map[app.StakedApp]struct{})
 
-	for _, app := range stakedApps {
-		chainID := types.RelayChainID(app.ServiceID())
+	for stakedApp := range stakedApps {
+		chainID := types.RelayChainID(stakedApp.Chain)
 
 		if _, ok := chainsWithRelays[chainID]; ok {
-			stakedAppsWithRelays = append(stakedAppsWithRelays, app)
+			stakedAppsWithRelays[stakedApp] = struct{}{}
 		}
 	}
 
@@ -273,42 +225,21 @@ func (r *wsRelayer) filterAppsForChainsWithRelays(stakedApps []protocol.App, cha
 }
 
 // getSessionData calls dispatch to get sessions for staked aps with relays and returns session and node details.
-func (r *wsRelayer) getSessionData(stakedAppsWithRelays []protocol.App) (map[nodepkg.ID]sessionData, error) {
+func (r *wsRelayer) getSessionData(stakedAppsWithRelays map[app.StakedApp]struct{}) (map[nodepkg.ID]sessionData, error) {
 	sessionDataByNode := make(map[nodepkg.ID]sessionData)
 
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	errorsChan := make(chan error, len(stakedAppsWithRelays))
+	for stakedApp := range stakedAppsWithRelays {
+		session, err := r.appInformer.Session(stakedApp)
+		if err != nil {
+			return nil, err
+		}
 
-	for _, stakedApp := range stakedAppsWithRelays {
-		wg.Add(1)
-
-		// send each Dispatch request to the protocol concurrently
-		go func(app protocol.App) {
-			defer wg.Done()
-
-			session, err := r.protocol.Dispatch(app)
-			if err != nil {
-				errorsChan <- err
-				return
+		for _, node := range session.Nodes() {
+			sessionDataByNode[node.ID()] = sessionData{
+				Session: session,
+				Node:    node,
 			}
-
-			mu.Lock()
-			for _, node := range session.Nodes() {
-				sessionDataByNode[node.ID()] = sessionData{
-					Session: session,
-					Node:    node,
-				}
-			}
-			mu.Unlock()
-		}(stakedApp)
-	}
-
-	wg.Wait()
-	close(errorsChan)
-
-	if len(errorsChan) > 0 {
-		return nil, <-errorsChan
+		}
 	}
 
 	return sessionDataByNode, nil
@@ -326,13 +257,13 @@ func (r *wsRelayer) constructRelayGroups(data relayGroupData) (relayGroups, erro
 			continue
 		}
 
-		portalApp, ok := data.portalAppsByID[portalAppID]
-		if !ok {
+		portalApp, err := r.backend.GetPortalAppByID(portalAppID)
+		if err != nil {
 			r.logger.Warn("could not find portal app by id", slog.String("portalAppID", string(portalAppID)))
 			continue
 		}
-		chain, ok := data.chainsByID[chainID]
-		if !ok {
+		chain, err := r.backend.GetChainByID(chainID)
+		if err != nil {
 			r.logger.Warn("could not find chain by id", slog.String("chainID", string(chainID)))
 			continue
 		}
