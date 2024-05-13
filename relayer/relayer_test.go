@@ -183,7 +183,7 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 					Count: 43,
 					RelayRequest: relay.RelayRequest{
 						Relays: []relay.Relay{
-							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody), RelayProtocol: types.ProtocolMorseMainnet},
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
 						},
 						Details: relay.RelayDetails{
 							UserApplication: *getTestPortalAppLites()["test_app_1"],
@@ -211,7 +211,7 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 					Count: 8,
 					RelayRequest: relay.RelayRequest{
 						Relays: []relay.Relay{
-							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody), RelayProtocol: types.ProtocolMorseMainnet},
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
 						},
 						Details: relay.RelayDetails{
 							UserApplication: *getTestPortalAppLites()["test_app_1"],
@@ -239,7 +239,7 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 					Count: 17,
 					RelayRequest: relay.RelayRequest{
 						Relays: []relay.Relay{
-							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody), RelayProtocol: types.ProtocolMorseMainnet},
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
 						},
 						Details: relay.RelayDetails{
 							UserApplication: *getTestPortalAppLites()["test_app_2"],

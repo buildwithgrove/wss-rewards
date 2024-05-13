@@ -271,7 +271,7 @@ func (r *wsRelayer) constructRelayGroups(data relayGroupData) (relayGroups, erro
 				GigastakeApp:    types.GigastakeApp{}, // random gigastake app will be chosen per relay
 			},
 			Relays: []relay.Relay{
-				relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody), RelayProtocol: r.protocolID},
+				relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
 			},
 			Method: http.MethodPost,
 			Origin: types.Origin(fmt.Sprintf(wsOrigin, chain.Blockchain)),

@@ -173,7 +173,7 @@ func main() {
 
 	go sub.RunSubscribers(context.Background(), subs)
 
-	// init relayer to send relaysb
+	// init relayer to send relays
 
 	morseProtocol, err := protocol.NewMorseProtocol(options.morseConfig, nil, logger)
 	if err != nil {
