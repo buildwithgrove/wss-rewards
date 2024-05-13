@@ -2,123 +2,132 @@ package subscription
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
-	"github.com/pokt-foundation/pocket-go/provider"
+	ws "github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-rewards/cache"
-	"github.com/pokt-foundation/wss-rewards/messenger"
 )
 
-const (
-	bufferSize      = 5_000
-	maxBatchWorkers = 10
+const retries = 3
+
+// TODO - move to cache
+var (
+	ErrNodeIDRequired      = errors.New("node ID is required")
+	ErrChainIDRequired     = errors.New("chain ID is required")
+	ErrPortalAppIDRequired = errors.New("portal app ID is required")
 )
 
 type (
 	RelaySubscriber struct {
-		batchSize       int16
-		batchWorkers    int16
-		relayCh         <-chan messenger.WSMetadata
-		metricsExporter messenger.MetricsReporter
-		cache           *cache.Cache[provider.Session]
-		logger          *slog.Logger
+		relayCh    <-chan ws.WSMetadata
+		relayBatch []ws.WSMetadata
+		cache      ICache
+		batchSize  int16
+		blockCh    chan struct{} // Channel to block processing
+		resumeCh   chan struct{} // Channel to resume processing
+		logger     *slog.Logger
 	}
 
 	RelaySubscriberConfig struct {
-		BatchSize       int16
-		BatchWorkers    int16
-		MetricsExporter messenger.MetricsReporter
-		Cache           *cache.Cache[provider.Session]
-		Logger          *logger.Logger
+		Cache     ICache
+		BatchSize int16
+		BlockCh   chan struct{}
+		ResumeCh  chan struct{}
+		Logger    *logger.Logger
 	}
 
-	relayHandler struct {
-		id int16
-		// using a buffered slice is faster than creating a new slice every 2000 items and adding elements to it
-		buffer          [bufferSize]messenger.WSMetadata
-		count           int16
-		batchSize       int16
-		relayCh         <-chan messenger.WSMetadata
-		metricsExporter messenger.MetricsReporter
-		logger          *slog.Logger
+	ICache interface {
+		SetWSRelays(map[cache.NodeKey]int64) error
 	}
 )
 
 func NewRelaySubscriber(config RelaySubscriberConfig) (*RelaySubscriber, error) {
-	if config.BatchWorkers > maxBatchWorkers {
-		config.BatchWorkers = maxBatchWorkers
-	}
-
-	subscriber := &RelaySubscriber{
-		batchWorkers:    config.BatchWorkers,
-		batchSize:       config.BatchSize,
-		metricsExporter: config.MetricsExporter,
-		cache:           config.Cache,
-		logger:          config.Logger.With("subscriber", "relay"),
-	}
-
-	return subscriber, nil
+	return &RelaySubscriber{
+		cache:      config.Cache,
+		relayBatch: make([]ws.WSMetadata, 0, config.BatchSize),
+		batchSize:  config.BatchSize,
+		blockCh:    config.BlockCh,
+		resumeCh:   config.ResumeCh,
+		logger:     config.Logger.With("subscriber", "relay"),
+	}, nil
 }
 
-func (rp *RelaySubscriber) Name() string {
+func (rs *RelaySubscriber) Name() string {
 	return "relay"
 }
 
-func (rp *RelaySubscriber) Subscribe(m messenger.Messenger) error {
-	rp.relayCh = m.RelaysChannel()
+func (rs *RelaySubscriber) Subscribe(m iMessenger) error {
+	rs.relayCh = m.RelaysChannel()
 	return nil
 }
 
-func (rp *RelaySubscriber) Process(ctx context.Context) {
-	// stagger workers to avoid relayHandler batches processing simultaneously
-	initialDelay := 200 * time.Millisecond
-
-	for i := int16(0); i < rp.batchWorkers; i++ {
-		go func(id int16) {
-			<-time.After(time.Duration(id) * initialDelay)
-			rp.batchWorker(ctx, id)
-		}(i)
-	}
-}
-
-// batchWorker processes relays from the relay channel and caches them for sending.
-func (rp *RelaySubscriber) batchWorker(ctx context.Context, id int16) {
-	rh := relayHandler{
-		id:              id,
-		batchSize:       rp.batchSize,
-		relayCh:         rp.relayCh,
-		logger:          rp.logger,
-		metricsExporter: rp.metricsExporter,
-	}
-
+func (rs *RelaySubscriber) Process(ctx context.Context) {
 	for {
 		select {
-		case <-ctx.Done():
-			return
-		case relay := <-rp.relayCh:
-			if err := rh.processRelay(relay); err != nil {
-				rh.logger.Error(fmt.Sprintf("error processing relay: %s", err.Error()))
+		case <-rs.blockCh:
+			rs.logger.Info("blocking relay subscriber processing to send dummy relays")
+			<-rs.resumeCh
+			rs.logger.Info("resuming relay subscriber processing after sending dummy relays")
+
+		case relay, ok := <-rs.relayCh:
+			if !ok {
+				rs.logger.Error("relay channel closed, exiting relay subscriber")
+				return
+			}
+
+			rs.relayBatch = append(rs.relayBatch, relay)
+
+			batchFull := len(rs.relayBatch) >= int(rs.batchSize)
+
+			if batchFull {
+				var err error
+				for attempt := 0; attempt < retries; attempt++ {
+					if err = rs.persistWSRelays(); err == nil {
+						break
+					}
+				}
+				if err != nil {
+					rs.logger.Error(fmt.Sprintf("cache write failed after %d retries: %s", retries, err.Error()))
+				}
+
+				// Clear the batch
+				rs.relayBatch = rs.relayBatch[:0]
 			}
 		}
 	}
 }
 
-func (rh *relayHandler) processRelay(relay messenger.WSMetadata) error {
-	// TODO - is relay.Node in session
+func (rs *RelaySubscriber) persistWSRelays() error {
+	relayMap := make(map[cache.NodeKey]int64)
 
-	// if it is, send relay to pay it out
+	for _, relay := range rs.relayBatch {
+		key := cache.NodeKey{
+			NodeID:      relay.NodeID,
+			ChainID:     relay.ChainID,
+			PortalAppID: relay.PortalAppID,
+		}
 
-	// if it is not, store in cache until node is in session again
+		if err := key.Validate(); err != nil {
+			rs.logger.Error(fmt.Sprintf("invalid node key: %s", err.Error()))
+			continue
+		}
+
+		relayMap[key] += 1
+	}
+
+	err := rs.cache.SetWSRelays(relayMap)
+	if err != nil {
+		return fmt.Errorf("error persisting relays: %w", err)
+	} else {
+		rs.logger.Info(fmt.Sprintf("%d relays persisted", len(rs.relayBatch)))
+	}
 
 	return nil
 }
 
-// TODO - re-evaluate the interface to see if Dispose is still necessary
-// Dispose only here to satisfy the interface
-func (rp *RelaySubscriber) Dispose() error {
-	// chan was not used in this file
+func (rs *RelaySubscriber) Dispose() error {
 	return nil
 }

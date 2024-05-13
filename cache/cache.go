@@ -1,71 +1,238 @@
 package cache
 
 import (
-	"sync"
-	"time"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+
+	"github.com/dgraph-io/badger"
+	"github.com/pokt-foundation/portal-http-db/v2/types"
+	"github.com/pokt-foundation/portal-middleware/node"
+	"github.com/pokt-foundation/utils-go/logger"
 )
 
-// TODO - update cache to use badger DB
-// TODO - update cache to store relays to be sent for out of session nodes
+var (
+	ErrNodeIDRequired      = errors.New("node ID is required")
+	ErrChainIDRequired     = errors.New("chain ID is required")
+	ErrPortalAppIDRequired = errors.New("portal app ID is required")
+)
 
-// Cache provides a simple in-memory cache
-type Cache[T any] struct {
-	entries map[string]entry[T]
-	mu      sync.RWMutex
-}
-
-type entry[T any] struct {
-	value  T
-	expire time.Time
-}
-
-// NewCache returns a cache struct with a window time to check for expired entries
-func NewCache[T any](cleanWindow time.Duration) *Cache[T] {
-	cache := &Cache[T]{
-		entries: make(map[string]entry[T]),
+type (
+	Cache struct {
+		db  *badger.DB
+		log *slog.Logger
 	}
-	go cache.evictExpiredEntries(cleanWindow)
-	return cache
+	Config struct {
+		DBPath string
+		Log    *logger.Logger
+	}
+
+	NodeKey struct {
+		NodeID      node.ID
+		ChainID     types.RelayChainID
+		PortalAppID types.PortalAppID
+	}
+
+	AllWSRelays map[NodeKey]int64
+)
+
+func (k *NodeKey) DecomposeKey() (node.ID, types.RelayChainID, types.PortalAppID) {
+	return k.NodeID, k.ChainID, k.PortalAppID
 }
 
-// evictExpiredEntries removes entries that have exceeded their TTL
-// cleanWindow: Interval between removing expired entries
-func (ss *Cache[T]) evictExpiredEntries(cleanWindow time.Duration) {
-	ticker := time.NewTicker(cleanWindow)
-	for range ticker.C {
-		ss.mu.Lock()
+func (k *NodeKey) Validate() error {
+	if k.NodeID == "" {
+		return ErrNodeIDRequired
+	}
+	if k.ChainID == "" {
+		return ErrChainIDRequired
+	}
+	if k.PortalAppID == "" {
+		return ErrPortalAppIDRequired
+	}
+	return nil
+}
 
-		entries := make(map[string]entry[T])
+func (k *NodeKey) string() string {
+	return fmt.Sprintf("%s-%s-%s", k.NodeID, k.ChainID, k.PortalAppID)
+}
 
-		for key, entry := range ss.entries {
-			now := time.Now()
-			if now.After(entry.expire) {
-				continue
+func nodeKeyFromString(s string) (NodeKey, error) {
+	parts := strings.Split(s, "-")
+	if len(parts) != 3 {
+		return NodeKey{}, fmt.Errorf("invalid node key: %s", s)
+	}
+
+	nodeKey := NodeKey{
+		NodeID:      node.ID(parts[0]),
+		ChainID:     types.RelayChainID(parts[1]),
+		PortalAppID: types.PortalAppID(parts[2]),
+	}
+
+	if err := nodeKey.Validate(); err != nil {
+		return NodeKey{}, err
+	}
+
+	return nodeKey, nil
+}
+
+func (a AllWSRelays) Nodes() map[node.ID]struct{} {
+	nodes := make(map[node.ID]struct{})
+	for nodeKey := range a {
+		nodes[nodeKey.NodeID] = struct{}{}
+	}
+	return nodes
+}
+
+func (a AllWSRelays) Chains() map[types.RelayChainID]struct{} {
+	chains := make(map[types.RelayChainID]struct{})
+	for nodeKey := range a {
+		chains[nodeKey.ChainID] = struct{}{}
+	}
+	return chains
+}
+
+func (a AllWSRelays) ToSerializable() map[string]int64 {
+	serializable := make(map[string]int64)
+	for nodeKey, count := range a {
+		serializable[nodeKey.string()] = count
+	}
+	return serializable
+}
+
+func NewCache(config Config) (*Cache, error) {
+	opts := badger.DefaultOptions(config.DBPath)
+	opts.Logger = nil
+
+	db, err := badger.Open(opts)
+	if err != nil {
+		return nil, fmt.Errorf("error opening badger db: %w", err)
+	}
+
+	return &Cache{
+		db:  db,
+		log: config.Log.With("module", "meter"),
+	}, nil
+}
+
+func (c *Cache) GetAllWSRelays() (AllWSRelays, error) {
+	allRelays := make(AllWSRelays)
+
+	err := c.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := item.Key()
+
+			nodeKey, err := nodeKeyFromString(string(key))
+			if err != nil {
+				return err
 			}
-			entries[key] = entry
+
+			err = item.Value(func(val []byte) error {
+				count := int64(binary.BigEndian.Uint64(val))
+				if count == 0 {
+					return nil
+				}
+
+				allRelays[nodeKey] = count
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	return allRelays, err
+}
+
+func (c *Cache) SetWSRelays(relays map[NodeKey]int64) error {
+	wb := c.db.NewWriteBatch()
+	defer wb.Cancel()
+
+	for nodeKey, newCount := range relays {
+		if newCount == 0 {
+			continue
 		}
 
-		// Golang maps always growth on memory as the memory is not completely de-allocated
-		// when removing entries, to avoid memory leaks, is safer to allocate the entries in a
-		// new map to force the GC to remove the memory by the previous store.
-		ss.entries = entries
+		keyString := nodeKey.string()
 
-		ss.mu.Unlock()
+		err := c.db.Update(func(txn *badger.Txn) error {
+			item, err := txn.Get([]byte(keyString))
+			if err != nil && err != badger.ErrKeyNotFound {
+				return err
+			}
+
+			var currentCount int64
+			if err != badger.ErrKeyNotFound {
+				err = item.Value(func(val []byte) error {
+					currentCount = int64(binary.BigEndian.Uint64(val))
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+			}
+
+			currentCount += newCount
+
+			data := make([]byte, 8)
+			binary.BigEndian.PutUint64(data, uint64(currentCount))
+
+			e := badger.NewEntry([]byte(keyString), data)
+			return wb.SetEntry(e)
+		})
+
+		if err != nil {
+			return err
+		}
 	}
+
+	return wb.Flush()
 }
 
-func (ss *Cache[T]) Get(key string) (T, bool) {
-	ss.mu.RLock()
-	defer ss.mu.RUnlock()
-	entry, ok := ss.entries[key]
-	return entry.value, ok
+func (c *Cache) ClearWSRelaysByNodeKeys(nodeKeys map[NodeKey]struct{}) error {
+	wb := c.db.NewWriteBatch()
+	defer wb.Cancel()
+
+	err := c.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := item.Key()
+
+			nodeKey, err := nodeKeyFromString(string(key))
+			if err != nil {
+				return err
+			}
+
+			if _, exists := nodeKeys[nodeKey]; exists {
+				if err := wb.Delete(key); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return wb.Flush()
 }
 
-func (ss *Cache[T]) Set(key string, value T, ttl time.Duration) {
-	ss.mu.Lock()
-	defer ss.mu.Unlock()
-	ss.entries[key] = entry[T]{
-		value:  value,
-		expire: time.Now().Add(ttl),
-	}
+func (c *Cache) Close() error {
+	return c.db.Close()
 }

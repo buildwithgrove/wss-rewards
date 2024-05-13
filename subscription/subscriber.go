@@ -6,23 +6,30 @@ import (
 	"log/slog"
 	"sync"
 
+	ws "github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
-	"github.com/pokt-foundation/wss-rewards/messenger"
 )
 
-type subscription struct {
-	messenger messenger.Messenger
-	logger    *logger.Logger
-}
+type (
+	subscription struct {
+		messenger iMessenger
+		logger    *logger.Logger
+	}
 
-type Subscriber interface {
-	Subscribe(messenger.Messenger) error
-	Process(ctx context.Context)
-	Dispose() error
-	Name() string
-}
+	iMessenger interface {
+		RelaysChannel() <-chan ws.WSMetadata
+		Close()
+	}
 
-func NewSubscription(messenger messenger.Messenger, logger *logger.Logger) (subscription, error) {
+	Subscriber interface {
+		Subscribe(iMessenger) error
+		Process(ctx context.Context)
+		Dispose() error
+		Name() string
+	}
+)
+
+func NewSubscription(messenger iMessenger, logger *logger.Logger) (subscription, error) {
 	return subscription{
 		messenger: messenger,
 		logger:    logger,
