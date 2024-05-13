@@ -14,7 +14,6 @@ import (
 	"github.com/pokt-foundation/portal-middleware/protocol"
 	"github.com/pokt-foundation/utils-go/environment"
 	"github.com/pokt-foundation/utils-go/logger"
-
 	"github.com/pokt-foundation/wss-rewards/cache"
 	"github.com/pokt-foundation/wss-rewards/messenger"
 	"github.com/pokt-foundation/wss-rewards/metric"

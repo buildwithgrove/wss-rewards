@@ -1,8 +1,6 @@
 module github.com/pokt-foundation/wss-rewards
 
-go 1.22
-
-replace github.com/pokt-foundation/portal-middleware => ../portal-middleware
+go 1.22.3
 
 replace github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alpha.regen.1
 
@@ -13,7 +11,7 @@ require (
 	github.com/nats-io/nats.go v1.31.0
 	github.com/pokt-foundation/pocket-go v0.17.0
 	github.com/pokt-foundation/portal-http-db/v2 v2.15.0
-	github.com/pokt-foundation/portal-middleware v0.0.219
+	github.com/pokt-foundation/portal-middleware v0.0.4-dev
 	github.com/pokt-foundation/utils-go v0.11.1
 	github.com/prometheus/client_golang v1.18.0
 	github.com/stretchr/testify v1.9.0
