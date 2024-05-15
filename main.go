@@ -26,13 +26,15 @@ import (
 
 const (
 	// Required env variables
-	phdURLEnv            = "PHD_BASE_URL"
-	phdAPIKeyEnv         = "PHD_API_KEY"
-	natsURLEnv           = "NATS_URL"
-	apiKeysEnv           = "API_KEYS"
-	gatewayPrivateKeyEnv = "GATEWAY_PRIVATE_KEY"
-	dispatcherURLEnv     = "DISPATCHER_URL"
-	pocketNodeURLEnv     = "POCKET_NODE_URL"
+	phdURLEnv             = "PHD_BASE_URL"
+	phdAPIKeyEnv          = "PHD_API_KEY"
+	rateLimiterBaseURLEnv = "RATE_LIMITER_BASE_URL"
+	rateLimiterAPIKeyEnv  = "RATE_LIMITER_API_KEY"
+	natsURLEnv            = "NATS_URL"
+	apiKeysEnv            = "API_KEYS"
+	gatewayPrivateKeyEnv  = "GATEWAY_PRIVATE_KEY"
+	dispatcherURLEnv      = "DISPATCHER_URL"
+	pocketNodeURLEnv      = "POCKET_NODE_URL"
 
 	// Optional env variables
 	relayBatchSizeEnv        = "RELAY_BATCH_SIZE"
@@ -47,7 +49,7 @@ const (
 	phdUpdateIntervalDefault     = 300
 	appRefreshIntervalDefault    = 300
 	defaultDBPath                = "./tmp/db"
-	defaultPort                  = "8100"
+	defaultPort                  = "8200"
 
 	imageTagEnv     = "IMAGE_TAG"
 	defaultImageTag = "development"
@@ -83,6 +85,11 @@ func gatherOptions() options {
 				APIKey:              environment.MustGetString(phdAPIKeyEnv),
 				CacheUpdateInterval: int(environment.GetInt64(phdUpdateIntervalEnv, phdUpdateIntervalDefault)),
 				GatewayEnv:          "production", // config data not used; hardcoded to avoid error in backend package
+			},
+			RateLimiterBackendConfig: backend.RateLimiterBackendConfig{
+				BaseURL:             environment.MustGetString(rateLimiterBaseURLEnv),
+				APIKey:              environment.MustGetString(rateLimiterAPIKeyEnv),
+				CacheUpdateInterval: 300, // rate limiter not actually used; hardcoded to avoid error in backend package
 			},
 		},
 		appInformerConfig: app.Config{
