@@ -18,12 +18,13 @@ import (
 	"github.com/pokt-foundation/wss-rewards/cache"
 )
 
-// TODO - determine custom ID to use for websocket relays
 const (
-	wsRelayBody = `{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":43000}` // <- TODO update 43000 once ID determined
-	wsOrigin    = "wss://%s.rpc.grove.city"
-	wsPath      = "/v1/%s"
+	wsRelayID = "WS1001" // TODO - determine custom ID to use for websocket relays
+	wsOrigin  = "wss://%s.rpc.grove.city"
+	wsPath    = "/v1/%s"
 )
+
+var wsRelayBody = fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":"%s"}`, wsRelayID)
 
 type (
 	wsRelayer struct {
