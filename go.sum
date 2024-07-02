@@ -954,6 +954,8 @@ github.com/pokt-foundation/pocket-go v0.19.0 h1:2zULi39LhdhtKa0ZlsGq6VxveghKGSpv
 github.com/pokt-foundation/pocket-go v0.19.0/go.mod h1:TyJgMIbfVF9qhjTMU9u+TeiBwYKLq6+YZhq6POLNeHE=
 github.com/pokt-foundation/portal-http-db/v2 v2.16.3 h1:PSfTimPyeqxjFjjU/TvrA9/OhSmEAHM7DsdKjJ/sYyY=
 github.com/pokt-foundation/portal-http-db/v2 v2.16.3/go.mod h1:P+/GlMRX9XIGDoRLZ8fo4sV9B405nc/8SZ5PNkKzsi0=
+github.com/pokt-foundation/portal-middleware v0.0.293 h1:RMk8A8fPbKfEzTIQG/nukzMLiR+b320QW2MgdrR1pjY=
+github.com/pokt-foundation/portal-middleware v0.0.293/go.mod h1:QxXUV06Wna/YseUbssHt5W5xcrJ92LwZuXpuVniHD1w=
 github.com/pokt-foundation/request-reporter v0.18.0 h1:FIQ0C3xfu4qwuZStTLzV92KdEC/7soMEtNBu2+RM2Kg=
 github.com/pokt-foundation/request-reporter v0.18.0/go.mod h1:bzALVkPefQxJRh9UgDJhpujITON/TfZnOit84f5aGWs=
 github.com/pokt-foundation/utils-go v0.11.1 h1:o/kF4KFaClAz2AvybDrEQR1TpEEx6zwyuGcOlD/aLuY=

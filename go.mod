@@ -4,8 +4,6 @@ go 1.22.3
 
 replace github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alpha.regen.1
 
-replace github.com/pokt-foundation/portal-middleware => ../portal-middleware
-
 require (
 	github.com/dgraph-io/badger v1.6.2
 	github.com/pokt-foundation/pocket-go v0.19.0

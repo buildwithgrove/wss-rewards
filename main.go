@@ -35,6 +35,7 @@ const (
 	gatewayPrivateKeyEnv  = "GATEWAY_PRIVATE_KEY"
 	dispatcherURLEnv      = "DISPATCHER_URL"
 	pocketNodeURLEnv      = "POCKET_NODE_URL"
+	wsChainsEnv           = "WS_CHAINS"
 
 	// Optional env variables
 	relayBatchSizeEnv        = "RELAY_BATCH_SIZE"
@@ -62,6 +63,7 @@ type options struct {
 	appInformerConfig informer.Config
 	natsURL           string
 	apiKeys           map[string]bool
+	wsChains          map[types.RelayChainID]struct{}
 	// Optional env variables
 	relayBatchSize    int16
 	schedulerInterval time.Duration
@@ -71,6 +73,12 @@ type options struct {
 }
 
 func gatherOptions() options {
+	wsChainsStr := environment.MustGetStringMap(wsChainsEnv, ",")
+	wsChains := make(map[types.RelayChainID]struct{}, len(wsChainsStr))
+	for chain := range wsChainsStr {
+		wsChains[types.RelayChainID(chain)] = struct{}{}
+	}
+
 	return options{
 		// Required env variables
 		morseConfig: protocol.MorseConfig{
@@ -95,8 +103,9 @@ func gatherOptions() options {
 		appInformerConfig: informer.Config{
 			RefreshInterval: int(environment.GetInt64(appRefreshIntervalEnv, appRefreshIntervalDefault)),
 		},
-		natsURL: environment.MustGetString(natsURLEnv),
-		apiKeys: environment.MustGetStringMap(apiKeysEnv, ","),
+		natsURL:  environment.MustGetString(natsURLEnv),
+		apiKeys:  environment.MustGetStringMap(apiKeysEnv, ","),
+		wsChains: wsChains,
 		// Optional env variables
 		relayBatchSize:    int16(environment.GetInt64(relayBatchSizeEnv, defaultRelayBatchSize)),
 		schedulerInterval: time.Duration(environment.GetInt64(schedulerIntervalMinsEnv, defaultSchedulerIntervalMins)) * time.Minute,
@@ -164,6 +173,7 @@ func main() {
 	relaySubscriber, err := subscription.NewRelaySubscriber(subscription.RelaySubscriberConfig{
 		Cache:     cache,
 		BatchSize: options.relayBatchSize,
+		WSChains:  options.wsChains,
 		Logger:    logger,
 		BlockCh:   blockCh,
 		ResumeCh:  resumeCh,

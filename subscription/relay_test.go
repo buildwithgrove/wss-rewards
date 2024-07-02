@@ -19,11 +19,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var chainIDs = map[types.RelayChainID]struct{}{
+	"W000": {}, "W001": {}, "W002": {}, "W003": {}, "W004": {}, "W005": {}, "W006": {}, "W007": {}, "W008": {},
+}
+
 func TestRelaySubscriber_Process(t *testing.T) {
 	tests := []struct {
 		name              string
 		relayMessages     []metrics.Relay
 		batchSize         int16
+		wsChains          map[types.RelayChainID]struct{}
 		expectedCallCount int
 		blockAt           int // index to block at, -1 if no block
 		resumeAt          int // index to resume at, -1 if no resume
@@ -32,6 +37,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 			name:              "should process 5000 relays and persist with batch size 100",
 			relayMessages:     generateRandomWSRelays(5_000),
 			batchSize:         1000,
+			wsChains:          chainIDs,
 			expectedCallCount: 5,
 			blockAt:           -1,
 			resumeAt:          -1,
@@ -40,6 +46,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 			name:              "should process 12000 relays and persist with batch size 300",
 			relayMessages:     generateRandomWSRelays(12_000),
 			batchSize:         3000,
+			wsChains:          chainIDs,
 			expectedCallCount: 4,
 			blockAt:           -1,
 			resumeAt:          -1,
@@ -48,6 +55,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 			name:              "should block and then resume processing relays",
 			relayMessages:     generateRandomWSRelays(1_000),
 			batchSize:         100,
+			wsChains:          chainIDs,
 			expectedCallCount: 10,
 			blockAt:           300, // Block after 300 messages
 			resumeAt:          700, // Resume after 700 messages
@@ -65,6 +73,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 			rs, err := NewRelaySubscriber(RelaySubscriberConfig{
 				Cache:     mockCache,
 				BatchSize: test.batchSize,
+				WSChains:  test.wsChains,
 				BlockCh:   blockCh,
 				ResumeCh:  resumeCh,
 				Logger:    logger.New(),

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/metrics"
@@ -21,6 +20,7 @@ type (
 		relayBatch []relayMetadata
 		cache      ICache
 		batchSize  int16
+		wsChains   map[types.RelayChainID]struct{}
 		blockCh    chan struct{} // Channel to block processing
 		resumeCh   chan struct{} // Channel to resume processing
 		logger     *slog.Logger
@@ -29,6 +29,7 @@ type (
 	RelaySubscriberConfig struct {
 		Cache     ICache
 		BatchSize int16
+		WSChains  map[types.RelayChainID]struct{}
 		BlockCh   chan struct{}
 		ResumeCh  chan struct{}
 		Logger    *logger.Logger
@@ -50,6 +51,7 @@ func NewRelaySubscriber(config RelaySubscriberConfig) (*RelaySubscriber, error) 
 		cache:      config.Cache,
 		relayBatch: make([]relayMetadata, 0, config.BatchSize),
 		batchSize:  config.BatchSize,
+		wsChains:   config.WSChains,
 		blockCh:    config.BlockCh,
 		resumeCh:   config.ResumeCh,
 		logger:     config.Logger.With("subscriber", "relay"),
@@ -80,7 +82,8 @@ func (rs *RelaySubscriber) Process(ctx context.Context) {
 				return
 			}
 
-			if !relayIsWebsocketChain(relay.PoktChainID) {
+			// Only the websocket chains specified in the config are processed
+			if _, relayIsWS := rs.wsChains[relay.PoktChainID]; !relayIsWS {
 				continue
 			}
 
@@ -104,10 +107,6 @@ func (rs *RelaySubscriber) Process(ctx context.Context) {
 			}
 		}
 	}
-}
-
-func relayIsWebsocketChain(chainID types.RelayChainID) bool {
-	return strings.HasPrefix(string(chainID), "W")
 }
 
 func relayToMetadata(relay metrics.Relay) relayMetadata {
