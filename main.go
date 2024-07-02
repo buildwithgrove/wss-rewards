@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
-	"github.com/pokt-foundation/portal-middleware/app"
 	"github.com/pokt-foundation/portal-middleware/backend"
+	"github.com/pokt-foundation/portal-middleware/informer"
 	"github.com/pokt-foundation/portal-middleware/messaging"
 	"github.com/pokt-foundation/portal-middleware/protocol"
 	"github.com/pokt-foundation/request-reporter/messenger"
@@ -59,7 +59,7 @@ type options struct {
 	// Required env variables
 	morseConfig       protocol.MorseConfig
 	backendConfig     backend.BackendConfig
-	appInformerConfig app.Config
+	appInformerConfig informer.Config
 	natsURL           string
 	apiKeys           map[string]bool
 	// Optional env variables
@@ -92,7 +92,7 @@ func gatherOptions() options {
 				CacheUpdateInterval: 300, // rate limiter not actually used; hardcoded to avoid error in backend package
 			},
 		},
-		appInformerConfig: app.Config{
+		appInformerConfig: informer.Config{
 			RefreshInterval: int(environment.GetInt64(appRefreshIntervalEnv, appRefreshIntervalDefault)),
 		},
 		natsURL: environment.MustGetString(natsURLEnv),
@@ -188,7 +188,14 @@ func main() {
 		return
 	}
 
-	appInformer, err := app.NewInformer(backend, morseProtocol, options.appInformerConfig, nil, nil, metricsExporter, logger)
+	appInformer, err := informer.NewAppInformer(
+		informer.Options{
+			Config:       options.appInformerConfig,
+			Backend:      backend,
+			Metric:       metricsExporter,
+			PoktProtocol: morseProtocol,
+			Logger:       logger,
+		})
 	if err != nil {
 		panic(fmt.Errorf("error setting up app informer: %v", err))
 	}

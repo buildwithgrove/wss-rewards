@@ -9,7 +9,7 @@ import (
 
 	"github.com/pokt-foundation/pocket-go/provider"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
-	app "github.com/pokt-foundation/portal-middleware/app"
+	"github.com/pokt-foundation/portal-middleware/informer"
 	nodepkg "github.com/pokt-foundation/portal-middleware/node"
 	"github.com/pokt-foundation/portal-middleware/protocol"
 	"github.com/pokt-foundation/portal-middleware/relay"
@@ -58,15 +58,15 @@ func newTestRelayer(t *testing.T) (*wsRelayer, mocks) {
 func Test_Relayer_filterAppsForChainsWithRelays(t *testing.T) {
 	tests := []struct {
 		name             string
-		stakedApps       map[app.StakedApp]types.GigastakeApp
+		stakedApps       map[informer.StakedApp]types.GigastakeApp
 		chainsWithRelays map[types.RelayChainID]struct{}
-		expectedApps     map[app.StakedApp]struct{}
+		expectedApps     map[informer.StakedApp]struct{}
 	}{
 		{
 			name:             "should filter apps correctly based on chains with relays",
 			stakedApps:       getTestStakedApps(),
 			chainsWithRelays: map[types.RelayChainID]struct{}{"0001": {}, "0053": {}},
-			expectedApps: map[app.StakedApp]struct{}{
+			expectedApps: map[informer.StakedApp]struct{}{
 				{PublicKey: "test_37a0e8437f5149dc98a9a5b207efc2d0", Chain: "0001"}: {},
 				{PublicKey: "test_a7e28f8d716541a0a332a5dc6b7e4e6e", Chain: "0053"}: {},
 			},
@@ -75,7 +75,7 @@ func Test_Relayer_filterAppsForChainsWithRelays(t *testing.T) {
 			name:             "should return empty if no matching chains",
 			stakedApps:       getTestStakedApps(),
 			chainsWithRelays: map[types.RelayChainID]struct{}{"9999": {}}, // Non-existent chain ID
-			expectedApps:     map[app.StakedApp]struct{}{},
+			expectedApps:     map[informer.StakedApp]struct{}{},
 		},
 	}
 
@@ -95,7 +95,7 @@ func Test_Relayer_filterAppsForChainsWithRelays(t *testing.T) {
 func Test_Relayer_getSessionData(t *testing.T) {
 	tests := []struct {
 		name                string
-		stakedApps          map[app.StakedApp]struct{}
+		stakedApps          map[informer.StakedApp]struct{}
 		expectedSessionData map[nodepkg.ID]sessionData
 		expectError         bool
 	}{
@@ -200,7 +200,7 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 								AppPublicKey: "test_37a0e8437f5149dc98a9a5b207efc2d0",
 								Chain:        "0021",
 							},
-							Nodes: getNodesForTestSession(app.StakedApp{Chain: "0021"}),
+							Nodes: getNodesForTestSession(informer.StakedApp{Chain: "0021"}),
 						},
 					},
 					Node: nodepkg.V0Node{
@@ -228,7 +228,7 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 								AppPublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e",
 								Chain:        "0040",
 							},
-							Nodes: getNodesForTestSession(app.StakedApp{Chain: "0040"}),
+							Nodes: getNodesForTestSession(informer.StakedApp{Chain: "0040"}),
 						},
 					},
 					Node: nodepkg.V0Node{
@@ -256,7 +256,7 @@ func Test_Relayer_constructRelayGroups(t *testing.T) {
 								AppPublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e",
 								Chain:        "0040",
 							},
-							Nodes: getNodesForTestSession(app.StakedApp{Chain: "0040"}),
+							Nodes: getNodesForTestSession(informer.StakedApp{Chain: "0040"}),
 						},
 					},
 					Node: nodepkg.V0Node{
@@ -317,13 +317,13 @@ func getTestSessionDataByNode() map[nodepkg.ID]sessionData {
 	return result
 }
 
-func getTestStakedApps() map[app.StakedApp]types.GigastakeApp {
+func getTestStakedApps() map[informer.StakedApp]types.GigastakeApp {
 	gigastakeApps := getTestGigastakeApps()
-	stakedApps := make(map[app.StakedApp]types.GigastakeApp)
+	stakedApps := make(map[informer.StakedApp]types.GigastakeApp)
 
 	for _, gigastakeApp := range gigastakeApps {
 		for chainID := range gigastakeApp.ChainIDs {
-			stakedApps[app.StakedApp{
+			stakedApps[informer.StakedApp{
 				PublicKey: gigastakeApp.PublicKey,
 				Chain:     chainID,
 			}] = *gigastakeApp
@@ -333,8 +333,8 @@ func getTestStakedApps() map[app.StakedApp]types.GigastakeApp {
 	return stakedApps
 }
 
-func filterTestStakesApps(stakedApps map[app.StakedApp]types.GigastakeApp) map[app.StakedApp]struct{} {
-	result := make(map[app.StakedApp]struct{})
+func filterTestStakesApps(stakedApps map[informer.StakedApp]types.GigastakeApp) map[informer.StakedApp]struct{} {
+	result := make(map[informer.StakedApp]struct{})
 
 	for app := range stakedApps {
 		result[app] = struct{}{}
@@ -343,7 +343,7 @@ func filterTestStakesApps(stakedApps map[app.StakedApp]types.GigastakeApp) map[a
 	return result
 }
 
-func getTestSession(app app.StakedApp) session.Session {
+func getTestSession(app informer.StakedApp) session.Session {
 	return session.MorseSession{
 		Session: provider.Session{
 			Header: provider.SessionHeader{
@@ -355,7 +355,7 @@ func getTestSession(app app.StakedApp) session.Session {
 	}
 }
 
-func getNodesForTestSession(app app.StakedApp) []provider.Node {
+func getNodesForTestSession(app informer.StakedApp) []provider.Node {
 	nodes := make([]provider.Node, 24)
 	for i := 0; i < 24; i++ {
 		nodes[i] = provider.Node{
@@ -906,7 +906,7 @@ type mockIAppInformer struct {
 }
 
 // Session provides a mock function with given fields: _a0
-func (_m *mockIAppInformer) Session(_a0 app.StakedApp) (session.Session, error) {
+func (_m *mockIAppInformer) Session(_a0 informer.StakedApp) (session.Session, error) {
 	ret := _m.Called(_a0)
 
 	if len(ret) == 0 {
@@ -915,16 +915,16 @@ func (_m *mockIAppInformer) Session(_a0 app.StakedApp) (session.Session, error) 
 
 	var r0 session.Session
 	var r1 error
-	if rf, ok := ret.Get(0).(func(app.StakedApp) (session.Session, error)); ok {
+	if rf, ok := ret.Get(0).(func(informer.StakedApp) (session.Session, error)); ok {
 		return rf(_a0)
 	}
-	if rf, ok := ret.Get(0).(func(app.StakedApp) session.Session); ok {
+	if rf, ok := ret.Get(0).(func(informer.StakedApp) session.Session); ok {
 		r0 = rf(_a0)
 	} else if ret.Get(0) != nil {
 		r0 = ret.Get(0).(session.Session)
 	}
 
-	if rf, ok := ret.Get(1).(func(app.StakedApp) error); ok {
+	if rf, ok := ret.Get(1).(func(informer.StakedApp) error); ok {
 		r1 = rf(_a0)
 	} else {
 		r1 = ret.Error(1)
@@ -934,22 +934,22 @@ func (_m *mockIAppInformer) Session(_a0 app.StakedApp) (session.Session, error) 
 }
 
 // StakedApps provides a mock function with given fields:
-func (_m *mockIAppInformer) StakedApps() (map[app.StakedApp]types.GigastakeApp, error) {
+func (_m *mockIAppInformer) StakedApps() (map[informer.StakedApp]types.GigastakeApp, error) {
 	ret := _m.Called()
 
 	if len(ret) == 0 {
 		panic("no return value specified for StakedApps")
 	}
 
-	var r0 map[app.StakedApp]types.GigastakeApp
+	var r0 map[informer.StakedApp]types.GigastakeApp
 	var r1 error
-	if rf, ok := ret.Get(0).(func() (map[app.StakedApp]types.GigastakeApp, error)); ok {
+	if rf, ok := ret.Get(0).(func() (map[informer.StakedApp]types.GigastakeApp, error)); ok {
 		return rf()
 	}
-	if rf, ok := ret.Get(0).(func() map[app.StakedApp]types.GigastakeApp); ok {
+	if rf, ok := ret.Get(0).(func() map[informer.StakedApp]types.GigastakeApp); ok {
 		r0 = rf()
 	} else if ret.Get(0) != nil {
-		r0 = ret.Get(0).(map[app.StakedApp]types.GigastakeApp)
+		r0 = ret.Get(0).(map[informer.StakedApp]types.GigastakeApp)
 	}
 
 	if rf, ok := ret.Get(1).(func() error); ok {
