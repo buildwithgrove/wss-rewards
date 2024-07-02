@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
-	"github.com/pokt-foundation/portal-middleware/app"
 	"github.com/pokt-foundation/portal-middleware/backend"
+	"github.com/pokt-foundation/portal-middleware/informer"
 	"github.com/pokt-foundation/portal-middleware/messaging"
 	"github.com/pokt-foundation/portal-middleware/protocol"
 	"github.com/pokt-foundation/request-reporter/messenger"
@@ -35,6 +35,7 @@ const (
 	gatewayPrivateKeyEnv  = "GATEWAY_PRIVATE_KEY"
 	dispatcherURLEnv      = "DISPATCHER_URL"
 	pocketNodeURLEnv      = "POCKET_NODE_URL"
+	wsChainsEnv           = "WS_CHAINS"
 
 	// Optional env variables
 	relayBatchSizeEnv        = "RELAY_BATCH_SIZE"
@@ -59,9 +60,10 @@ type options struct {
 	// Required env variables
 	morseConfig       protocol.MorseConfig
 	backendConfig     backend.BackendConfig
-	appInformerConfig app.Config
+	appInformerConfig informer.Config
 	natsURL           string
 	apiKeys           map[string]bool
+	wsChains          map[types.RelayChainID]struct{}
 	// Optional env variables
 	relayBatchSize    int16
 	schedulerInterval time.Duration
@@ -71,6 +73,12 @@ type options struct {
 }
 
 func gatherOptions() options {
+	wsChainsStr := environment.MustGetStringMap(wsChainsEnv, ",")
+	wsChains := make(map[types.RelayChainID]struct{}, len(wsChainsStr))
+	for chain := range wsChainsStr {
+		wsChains[types.RelayChainID(chain)] = struct{}{}
+	}
+
 	return options{
 		// Required env variables
 		morseConfig: protocol.MorseConfig{
@@ -92,11 +100,12 @@ func gatherOptions() options {
 				CacheUpdateInterval: 300, // rate limiter not actually used; hardcoded to avoid error in backend package
 			},
 		},
-		appInformerConfig: app.Config{
+		appInformerConfig: informer.Config{
 			RefreshInterval: int(environment.GetInt64(appRefreshIntervalEnv, appRefreshIntervalDefault)),
 		},
-		natsURL: environment.MustGetString(natsURLEnv),
-		apiKeys: environment.MustGetStringMap(apiKeysEnv, ","),
+		natsURL:  environment.MustGetString(natsURLEnv),
+		apiKeys:  environment.MustGetStringMap(apiKeysEnv, ","),
+		wsChains: wsChains,
 		// Optional env variables
 		relayBatchSize:    int16(environment.GetInt64(relayBatchSizeEnv, defaultRelayBatchSize)),
 		schedulerInterval: time.Duration(environment.GetInt64(schedulerIntervalMinsEnv, defaultSchedulerIntervalMins)) * time.Minute,
@@ -164,6 +173,7 @@ func main() {
 	relaySubscriber, err := subscription.NewRelaySubscriber(subscription.RelaySubscriberConfig{
 		Cache:     cache,
 		BatchSize: options.relayBatchSize,
+		WSChains:  options.wsChains,
 		Logger:    logger,
 		BlockCh:   blockCh,
 		ResumeCh:  resumeCh,
@@ -188,7 +198,14 @@ func main() {
 		return
 	}
 
-	appInformer, err := app.NewInformer(backend, morseProtocol, options.appInformerConfig, nil, nil, metricsExporter, logger)
+	appInformer, err := informer.NewAppInformer(
+		informer.Options{
+			Config:       options.appInformerConfig,
+			Backend:      backend,
+			Metric:       metricsExporter,
+			PoktProtocol: morseProtocol,
+			Logger:       logger,
+		})
 	if err != nil {
 		panic(fmt.Errorf("error setting up app informer: %v", err))
 	}

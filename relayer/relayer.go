@@ -9,7 +9,7 @@ import (
 	"net/http"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
-	"github.com/pokt-foundation/portal-middleware/app"
+	"github.com/pokt-foundation/portal-middleware/informer"
 	nodepkg "github.com/pokt-foundation/portal-middleware/node"
 	"github.com/pokt-foundation/portal-middleware/protocol"
 	"github.com/pokt-foundation/portal-middleware/relay"
@@ -52,8 +52,8 @@ type (
 		Relay(relayReq protocol.ProtocolRequest) (protocol.ProtocolResponse, protocol.RelayError)
 	}
 	iAppInformer interface {
-		StakedApps() (map[app.StakedApp]types.GigastakeApp, error)
-		Session(app app.StakedApp) (sessionpkg.Session, error)
+		StakedApps() (map[informer.StakedApp]types.GigastakeApp, error)
+		Session(app informer.StakedApp) (sessionpkg.Session, error)
 	}
 	iCache interface {
 		GetAllWSRelays() (cache.AllWSRelays, error)
@@ -177,7 +177,7 @@ func (r *wsRelayer) SendWSRelays() error {
 }
 
 // getRelayGroups orchestrates the process of getting relay groups.
-func (r *wsRelayer) getRelayGroups(stakedApps map[app.StakedApp]types.GigastakeApp) (relayGroups, error) {
+func (r *wsRelayer) getRelayGroups(stakedApps map[informer.StakedApp]types.GigastakeApp) (relayGroups, error) {
 	// get all websocket relays from the cache
 	allWSRelays, err := r.cache.GetAllWSRelays()
 	if err != nil {
@@ -206,8 +206,8 @@ func (r *wsRelayer) getRelayGroups(stakedApps map[app.StakedApp]types.GigastakeA
 }
 
 // filterAppsForChainsWithRelays ensures only staked apps for chains with relays are returned.
-func (r *wsRelayer) filterAppsForChainsWithRelays(stakedApps map[app.StakedApp]types.GigastakeApp, chainsWithRelays map[types.RelayChainID]struct{}) map[app.StakedApp]struct{} {
-	stakedAppsWithRelays := make(map[app.StakedApp]struct{})
+func (r *wsRelayer) filterAppsForChainsWithRelays(stakedApps map[informer.StakedApp]types.GigastakeApp, chainsWithRelays map[types.RelayChainID]struct{}) map[informer.StakedApp]struct{} {
+	stakedAppsWithRelays := make(map[informer.StakedApp]struct{})
 
 	for stakedApp := range stakedApps {
 		chainID := types.RelayChainID(stakedApp.Chain)
@@ -221,7 +221,7 @@ func (r *wsRelayer) filterAppsForChainsWithRelays(stakedApps map[app.StakedApp]t
 }
 
 // getSessionData calls dispatch to get sessions for staked aps with relays and returns session and node details.
-func (r *wsRelayer) getSessionData(stakedAppsWithRelays map[app.StakedApp]struct{}) (map[nodepkg.ID]sessionData, error) {
+func (r *wsRelayer) getSessionData(stakedAppsWithRelays map[informer.StakedApp]struct{}) (map[nodepkg.ID]sessionData, error) {
 	sessionDataByNode := make(map[nodepkg.ID]sessionData)
 
 	for stakedApp := range stakedAppsWithRelays {
