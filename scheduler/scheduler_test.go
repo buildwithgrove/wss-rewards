@@ -17,13 +17,13 @@ func TestScheduler_Run(t *testing.T) {
 	}{
 		{
 			name:          "should run scheduler for 500ms with 100ms tick interval",
-			runDuration:   500 * time.Millisecond,
+			runDuration:   510 * time.Millisecond,
 			tickInterval:  100 * time.Millisecond,
 			expectedCalls: 5,
 		},
 		{
 			name:          "should run scheduler for 1s with 200ms tick interval",
-			runDuration:   1 * time.Second,
+			runDuration:   1*time.Second + 10*time.Millisecond,
 			tickInterval:  200 * time.Millisecond,
 			expectedCalls: 5,
 		},

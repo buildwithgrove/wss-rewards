@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
-	"time"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/app"
@@ -19,12 +18,13 @@ import (
 	"github.com/pokt-foundation/wss-rewards/cache"
 )
 
-// TODO - determine custom ID to use for websocket relays
 const (
-	wsRelayBody = `{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":43000}` // <- TODO update 43000 once ID determined
-	wsOrigin    = "wss://%s.rpc.grove.city"
-	wsPath      = "/v1/%s"
+	wsRelayID = "WS1001" // TODO - determine custom ID to use for websocket relays
+	wsOrigin  = "wss://%s.rpc.grove.city"
+	wsPath    = "/v1/%s"
 )
+
+var wsRelayBody = fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":"%s"}`, wsRelayID)
 
 type (
 	wsRelayer struct {
@@ -157,14 +157,11 @@ func (r *wsRelayer) SendWSRelays() error {
 				relayRequest.Details.Chain = relayRequest.Details.Chain.ClearGigastakeApps()
 
 				// TODO - implement retry?
-				resp, relayLog, err := r.sendNodeRelay(relayRequest, rg.Session, rg.Node)
+				err := r.sendNodeRelay(relayRequest, rg.Session, rg.Node)
 				if err != nil {
 					r.logger.Error("error sending relay", slog.String("err", err.Error()))
 					continue
 				}
-
-				// TODO - report relay to metrics/R2D2
-				fmt.Println(resp, relayLog)
 			}
 		}(rg)
 	}
@@ -172,7 +169,6 @@ func (r *wsRelayer) SendWSRelays() error {
 	// clear all node keys from the cache that relays were sent for
 	nodesInSession := relayGroups.getNodeKeys()
 
-	// TODO - implement this method in cache
 	if err := r.cache.ClearWSRelaysByNodeKeys(nodesInSession); err != nil {
 		return err
 	}
@@ -276,7 +272,7 @@ func (r *wsRelayer) constructRelayGroups(data relayGroupData) (relayGroups, erro
 				GigastakeApp:    types.GigastakeApp{}, // random gigastake app will be chosen per relay
 			},
 			Relays: []relay.Relay{
-				relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody), RelayProtocol: r.protocolID},
+				relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
 			},
 			Method: http.MethodPost,
 			Origin: types.Origin(fmt.Sprintf(wsOrigin, chain.Blockchain)),
@@ -297,37 +293,14 @@ func (r *wsRelayer) constructRelayGroups(data relayGroupData) (relayGroups, erro
 }
 
 // sendNodeRelay sends a dummy relay to a node to credit them on-chain for websocket messages through the gateway.
-func (r *wsRelayer) sendNodeRelay(request relay.RelayRequest, session sessionpkg.Session, node nodepkg.Node) (protocol.ProtocolResponse, relay.RelayLog, error) {
+func (r *wsRelayer) sendNodeRelay(req relay.RelayRequest, session sessionpkg.Session, node nodepkg.Node) error {
 	if !session.NodeInSession(node) {
-		return protocol.MorseRelayResponse{}, relay.RelayLog{}, errors.New("could not find node with id " + string(node.ID()))
+		return errors.New("could not find node with id " + string(node.ID()))
 	}
 
-	gigastakeAppPublicKey := request.GigastakeAppPublicKey()
-
-	relayLog := relay.RelayLog{
-		SelectionInvoked:  time.Now(),
-		ProtocolPublicKey: gigastakeAppPublicKey,
-		NodeServiceURL:    node.URL(),
-		NodePublicKey:     node.PublicKey(),
-		NodeSent:          time.Now(),
-	}
-
-	output, relayLog, err := r.sendNetworkRelay(request, relayLog, session, node)
-
-	relayLog.NodeReturned = time.Now()
-
-	return output, relayLog, err
-}
-
-// sendNetworkRelay sends a dummy relay to a node to credit them on-chain for websocket messages through the gateway.
-func (r *wsRelayer) sendNetworkRelay(req relay.RelayRequest, relayLog relay.RelayLog, session sessionpkg.Session, node nodepkg.Node) (protocol.ProtocolResponse, relay.RelayLog, error) {
 	data, err := json.Marshal(req.Relays[0]) // there will only ever be one relay for ws relay requests
 	if err != nil {
-		relayLog.Error = err
-		// TODO - handle errors
-		// relayLog.ErrorType = MiddlewareErr
-		// relayLog.ErrorSubtype = MarshalRelaysErr
-		return nil, relayLog, err
+		return err
 	}
 
 	var relayPath string
@@ -350,17 +323,14 @@ func (r *wsRelayer) sendNetworkRelay(req relay.RelayRequest, relayLog relay.Rela
 		Session:      session,
 		Node:         node,
 	}
+
 	response, relayError := r.protocol.Relay(protocolRelayRequest)
 	if relayError.Error != nil {
 		if response == nil {
-			return nil, relayLog, relayError.Error
+			return relayError.Error
 		}
-		relayLog.Error = relayError.Error
-		// TODO - handle errors
-		// relayLog.ErrorType = ErrorType(relayError.ErrorType)
-		// relayLog.ErrorSubtype = ErrorSubtype(relayError.ErrorSubtype)
-		return nil, relayLog, relayError.Error
+		return relayError.Error
 	}
 
-	return response, relayLog, nil
+	return nil
 }

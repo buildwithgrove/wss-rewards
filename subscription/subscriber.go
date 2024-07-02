@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
-	ws "github.com/pokt-foundation/portal-middleware/websockets"
+	"github.com/pokt-foundation/portal-middleware/metrics"
 	"github.com/pokt-foundation/utils-go/logger"
 )
 
@@ -17,7 +17,7 @@ type (
 	}
 
 	iMessenger interface {
-		RelaysChannel() <-chan ws.WSMetadata
+		RelaysChannel() <-chan metrics.Relay
 		Close()
 	}
 

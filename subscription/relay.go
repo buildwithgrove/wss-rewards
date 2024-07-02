@@ -2,28 +2,23 @@ package subscription
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
-	ws "github.com/pokt-foundation/portal-middleware/websockets"
+	"github.com/pokt-foundation/portal-http-db/v2/types"
+	"github.com/pokt-foundation/portal-middleware/metrics"
+	"github.com/pokt-foundation/portal-middleware/node"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-rewards/cache"
 )
 
 const retries = 3
 
-// TODO - move to cache
-var (
-	ErrNodeIDRequired      = errors.New("node ID is required")
-	ErrChainIDRequired     = errors.New("chain ID is required")
-	ErrPortalAppIDRequired = errors.New("portal app ID is required")
-)
-
 type (
 	RelaySubscriber struct {
-		relayCh    <-chan ws.WSMetadata
-		relayBatch []ws.WSMetadata
+		relayCh    <-chan metrics.Relay
+		relayBatch []relayMetadata
 		cache      ICache
 		batchSize  int16
 		blockCh    chan struct{} // Channel to block processing
@@ -39,6 +34,12 @@ type (
 		Logger    *logger.Logger
 	}
 
+	relayMetadata struct {
+		NodeID      node.ID            `json:"node_id"`
+		PortalAppID types.PortalAppID  `json:"portal_app_id"`
+		ChainID     types.RelayChainID `json:"chain_id"`
+	}
+
 	ICache interface {
 		SetWSRelays(map[cache.NodeKey]int64) error
 	}
@@ -47,7 +48,7 @@ type (
 func NewRelaySubscriber(config RelaySubscriberConfig) (*RelaySubscriber, error) {
 	return &RelaySubscriber{
 		cache:      config.Cache,
-		relayBatch: make([]ws.WSMetadata, 0, config.BatchSize),
+		relayBatch: make([]relayMetadata, 0, config.BatchSize),
 		batchSize:  config.BatchSize,
 		blockCh:    config.BlockCh,
 		resumeCh:   config.ResumeCh,
@@ -64,6 +65,7 @@ func (rs *RelaySubscriber) Subscribe(m iMessenger) error {
 	return nil
 }
 
+// TODO - should Process be called in a worker pool as in R2 or is one goroutine sufficient?
 func (rs *RelaySubscriber) Process(ctx context.Context) {
 	for {
 		select {
@@ -78,7 +80,11 @@ func (rs *RelaySubscriber) Process(ctx context.Context) {
 				return
 			}
 
-			rs.relayBatch = append(rs.relayBatch, relay)
+			if !relayIsWebsocketChain(relay.PoktChainID) {
+				continue
+			}
+
+			rs.relayBatch = append(rs.relayBatch, relayToMetadata(relay))
 
 			batchFull := len(rs.relayBatch) >= int(rs.batchSize)
 
@@ -97,6 +103,18 @@ func (rs *RelaySubscriber) Process(ctx context.Context) {
 				rs.relayBatch = rs.relayBatch[:0]
 			}
 		}
+	}
+}
+
+func relayIsWebsocketChain(chainID types.RelayChainID) bool {
+	return strings.HasPrefix(string(chainID), "W")
+}
+
+func relayToMetadata(relay metrics.Relay) relayMetadata {
+	return relayMetadata{
+		NodeID:      node.ID(relay.PoktNodePublicKey),
+		PortalAppID: relay.RelayRequest.Details.UserApplication.ID,
+		ChainID:     relay.PoktChainID,
 	}
 }
 
