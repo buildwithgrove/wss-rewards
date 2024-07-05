@@ -2,7 +2,6 @@ package relayer
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -24,12 +23,25 @@ const (
 	wsPath    = "/v1/%s"
 )
 
-var wsRelayBody = fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":"%s"}`, wsRelayID)
+var (
+	wsRelayBody = fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":"%s"}`, wsRelayID)
+
+	// TODO_IMPROVE: Move this in global env variable configurations that can
+	// be configured based on chainId, appId, userId, etc...
+	// Note: this mitigates but doesn't solve the issue
+	// - All nodes in a session are bad
+	// - No good nodes exist at all
+	// - Attempts exhausted and no good response is found
+	chainToAttemptsMap = map[types.RelayChainID]int{
+		"A001": 5, // POKT Archival MainNet
+		"0001": 5, // POKT non-archival MainNet
+	}
+)
 
 type (
 	wsRelayer struct {
 		protocolID  types.ProtocolID
-		protocol    iProtocol
+		relayer     iRelayer
 		cache       iCache
 		backend     iBackend
 		appInformer iAppInformer
@@ -39,7 +51,7 @@ type (
 	}
 	Config struct {
 		ProtocolID  types.ProtocolID
-		Protocol    protocol.PoktProtocol
+		Relayer     iRelayer
 		Cache       iCache
 		Backend     iBackend
 		BlockCh     chan struct{}
@@ -48,8 +60,8 @@ type (
 		Logger      *logger.Logger
 	}
 
-	iProtocol interface {
-		Relay(relayReq protocol.ProtocolRequest) (protocol.ProtocolResponse, protocol.RelayError)
+	iRelayer interface {
+		SendNodeRelay(request relay.RelayRequest, session sessionpkg.Session, node nodepkg.Node) (protocol.ProtocolResponse, relay.RelayLog, error)
 	}
 	iAppInformer interface {
 		StakedApps() (map[informer.StakedApp]types.GigastakeApp, error)
@@ -104,7 +116,7 @@ func (g relayGroups) getNodeKeys() map[cache.NodeKey]struct{} {
 func NewWSRelayer(config Config) *wsRelayer {
 	return &wsRelayer{
 		protocolID:  config.ProtocolID,
-		protocol:    config.Protocol,
+		relayer:     config.Relayer,
 		cache:       config.Cache,
 		backend:     config.Backend,
 		blockCh:     config.BlockCh,
@@ -145,6 +157,11 @@ func (r *wsRelayer) SendWSRelays() error {
 				return
 			}
 
+			maxAttempts, ok := chainToAttemptsMap[rg.RelayRequest.Details.Chain.ID]
+			if !ok {
+				maxAttempts = 2 // default number of attempts if unspecified
+			}
+
 			// send the total count of dummy relays for the relay group
 			for i := 0; i < int(rg.Count); i++ {
 				relayRequest := rg.RelayRequest // copy relay request
@@ -156,11 +173,15 @@ func (r *wsRelayer) SendWSRelays() error {
 				// clear gigastake apps from chain once random gigastake app is chosen
 				relayRequest.Details.Chain = relayRequest.Details.Chain.ClearGigastakeApps()
 
-				// TODO - implement retry?
-				err := r.sendNodeRelay(relayRequest, rg.Session, rg.Node)
-				if err != nil {
-					r.logger.Error("error sending relay", slog.String("err", err.Error()))
-					continue
+				// perform relay with retry
+				for attempt := 0; attempt < maxAttempts; attempt++ {
+					// TODO - implement logging/metrics based on response?
+					_, _, err := r.relayer.SendNodeRelay(relayRequest, rg.Session, rg.Node)
+					if err != nil {
+						r.logger.Error("error sending relay", slog.String("err", err.Error()))
+						continue
+					}
+					return
 				}
 			}
 		}(rg)
@@ -290,47 +311,4 @@ func (r *wsRelayer) constructRelayGroups(data relayGroupData) (relayGroups, erro
 	}
 
 	return relayGroups, nil
-}
-
-// sendNodeRelay sends a dummy relay to a node to credit them on-chain for websocket messages through the gateway.
-func (r *wsRelayer) sendNodeRelay(req relay.RelayRequest, session sessionpkg.Session, node nodepkg.Node) error {
-	if !session.NodeInSession(node) {
-		return errors.New("could not find node with id " + string(node.ID()))
-	}
-
-	data, err := json.Marshal(req.Relays[0]) // there will only ever be one relay for ws relay requests
-	if err != nil {
-		return err
-	}
-
-	var relayPath string
-
-	// For Public RPC endpoints, path comes empty
-	// TODO - do we need this here?
-	if req.Path != "" {
-		relayPath = req.Path
-	} else {
-		relayPath = req.Details.Chain.Path
-	}
-
-	protocolRelayRequest := protocol.ProtocolRequest{
-		GigastakeApp: req.Details.GigastakeApp,
-		Protocol:     req.Details.Protocol,
-		Method:       req.Method,
-		Data:         data,
-		ServiceID:    string(req.ChainID()),
-		UrlPath:      relayPath,
-		Session:      session,
-		Node:         node,
-	}
-
-	response, relayError := r.protocol.Relay(protocolRelayRequest)
-	if relayError.Error != nil {
-		if response == nil {
-			return relayError.Error
-		}
-		return relayError.Error
-	}
-
-	return nil
 }
