@@ -55,6 +55,146 @@ func newTestRelayer(t *testing.T) (*wsRelayer, mocks) {
 	return NewWSRelayer(config), mocks
 }
 
+func Test_Relayer_getRelayGroups(t *testing.T) {
+	tests := []struct {
+		name           string
+		stakedApps     map[informer.StakedApp]types.GigastakeApp
+		allWSRelays    cache.AllWSRelays
+		expectedGroups relayGroups
+		expectError    bool
+	}{
+		{
+			name: "should get relay groups correctly",
+			stakedApps: map[informer.StakedApp]types.GigastakeApp{
+				{PublicKey: "test_37a0e8437f5149dc98a9a5b207efc2d0", Chain: "0021"}: *getTestGigastakeApps()["test_gigastake_app_1"],
+				{PublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e", Chain: "0040"}: *getTestGigastakeApps()["test_gigastake_app_3"],
+			},
+			allWSRelays: cache.AllWSRelays{
+				{NodeID: "0021_node_1", ChainID: "0021", PortalAppID: "test_app_1"}: 43,
+				{NodeID: "0040_node_1", ChainID: "0040", PortalAppID: "test_app_1"}: 8,
+				{NodeID: "0040_node_2", ChainID: "0040", PortalAppID: "test_app_2"}: 17,
+			},
+			expectedGroups: relayGroups{
+				{
+					Count: 43,
+					RelayRequest: relay.RelayRequest{
+						Relays: []relay.Relay{
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
+						},
+						Details: relay.RelayDetails{
+							UserApplication: *getTestPortalAppLites()["test_app_1"],
+							Chain:           *getTestChains()["0021"],
+							Protocol:        types.ProtocolMorseMainnet,
+						},
+						Origin: "wss://eth-mainnet.rpc.grove.city",
+						Method: "POST",
+						Path:   "/v1/test_app_1",
+					},
+					Session: session.MorseSession{
+						Session: provider.Session{
+							Header: provider.SessionHeader{
+								AppPublicKey: "test_37a0e8437f5149dc98a9a5b207efc2d0",
+								Chain:        "0021",
+							},
+							Nodes: getNodesForTestSession(informer.StakedApp{Chain: "0021"}),
+						},
+					},
+					Node: nodepkg.V0Node{
+						ProviderNode: provider.Node{PublicKey: "0021_node_1"},
+					},
+				},
+				{
+					Count: 8,
+					RelayRequest: relay.RelayRequest{
+						Relays: []relay.Relay{
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
+						},
+						Details: relay.RelayDetails{
+							UserApplication: *getTestPortalAppLites()["test_app_1"],
+							Chain:           *getTestChains()["0040"],
+							Protocol:        types.ProtocolMorseMainnet,
+						},
+						Origin: "wss://harmony-0.rpc.grove.city",
+						Method: "POST",
+						Path:   "/v1/test_app_1",
+					},
+					Session: session.MorseSession{
+						Session: provider.Session{
+							Header: provider.SessionHeader{
+								AppPublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e",
+								Chain:        "0040",
+							},
+							Nodes: getNodesForTestSession(informer.StakedApp{Chain: "0040"}),
+						},
+					},
+					Node: nodepkg.V0Node{
+						ProviderNode: provider.Node{PublicKey: "0040_node_1"},
+					},
+				},
+				{
+					Count: 17,
+					RelayRequest: relay.RelayRequest{
+						Relays: []relay.Relay{
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
+						},
+						Details: relay.RelayDetails{
+							UserApplication: *getTestPortalAppLites()["test_app_2"],
+							Chain:           *getTestChains()["0040"],
+							Protocol:        types.ProtocolMorseMainnet,
+						},
+						Origin: "wss://harmony-0.rpc.grove.city",
+						Method: "POST",
+						Path:   "/v1/test_app_2",
+					},
+					Session: session.MorseSession{
+						Session: provider.Session{
+							Header: provider.SessionHeader{
+								AppPublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e",
+								Chain:        "0040",
+							},
+							Nodes: getNodesForTestSession(informer.StakedApp{Chain: "0040"}),
+						},
+					},
+					Node: nodepkg.V0Node{
+						ProviderNode: provider.Node{PublicKey: "0040_node_2"},
+					},
+				},
+			},
+			expectError: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			relayer, mocks := newTestRelayer(t)
+
+			mocks.mockCache.On("GetAllWSRelays").Return(test.allWSRelays, nil).Once()
+
+			for nodeKey := range test.allWSRelays {
+				_, chainID, portalAppID := nodeKey.DecomposeKey()
+				mocks.mockBackend.On("GetPortalAppByID", portalAppID).Return(*getTestPortalAppLites()[portalAppID], nil).Once()
+				mocks.mockBackend.On("GetChainByID", chainID).Return(*getTestChains()[chainID], nil).Once()
+			}
+
+			for stakedApp := range test.stakedApps {
+				session := getTestSession(stakedApp)
+				mocks.mockAppInformer.On("Session", stakedApp).Return(session, nil).Once()
+			}
+
+			relayGroups, err := relayer.getRelayGroups(test.stakedApps)
+
+			if test.expectError {
+				c.Error(err)
+			} else {
+				c.NoError(err)
+				c.ElementsMatch(test.expectedGroups, relayGroups)
+			}
+		})
+	}
+}
+
 func Test_Relayer_filterAppsForChainsWithRelays(t *testing.T) {
 	tests := []struct {
 		name             string
