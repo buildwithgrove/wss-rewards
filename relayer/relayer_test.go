@@ -55,6 +55,68 @@ func newTestRelayer(t *testing.T) (*wsRelayer, mocks) {
 	return NewWSRelayer(config), mocks
 }
 
+func Test_Relayer_SendWSRelays(t *testing.T) {
+	tests := []struct {
+		name          string
+		stakedApps    map[informer.StakedApp]types.GigastakeApp
+		allWSRelays   cache.AllWSRelays
+		expectedCalls int
+		expectError   bool
+	}{
+		{
+			name: "should send WS relays correctly",
+			stakedApps: map[informer.StakedApp]types.GigastakeApp{
+				{PublicKey: "test_37a0e8437f5149dc98a9a5b207efc2d0", Chain: "0021"}: *getTestGigastakeApps()["test_gigastake_app_1"],
+				{PublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e", Chain: "0040"}: *getTestGigastakeApps()["test_gigastake_app_3"],
+			},
+			allWSRelays: cache.AllWSRelays{
+				{NodeID: "0021_node_1", ChainID: "0021", PortalAppID: "test_app_1"}: 43,
+				{NodeID: "0040_node_1", ChainID: "0040", PortalAppID: "test_app_1"}: 8,
+				{NodeID: "0040_node_2", ChainID: "0040", PortalAppID: "test_app_2"}: 17,
+			},
+			expectedCalls: 68, // 43 + 8 + 17
+			expectError:   false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			relayer, mocks := newTestRelayer(t)
+
+			mocks.mockAppInformer.On("StakedApps").Return(test.stakedApps, nil).Once()
+			mocks.mockCache.On("GetAllWSRelays").Return(test.allWSRelays, nil).Once()
+			for nodeKey := range test.allWSRelays {
+				_, chainID, portalAppID := nodeKey.DecomposeKey()
+				mocks.mockBackend.On("GetPortalAppByID", portalAppID).Return(*getTestPortalAppLites()[portalAppID], nil).Once()
+				mocks.mockBackend.On("GetChainByID", chainID).Return(*getTestChains()[chainID], nil).Once()
+			}
+			for stakedApp := range test.stakedApps {
+				session := getTestSession(stakedApp)
+				mocks.mockAppInformer.On("Session", stakedApp).Return(session, nil).Once()
+			}
+			mocks.mockRelayer.On("SendNodeRelay", mock.Anything, mock.Anything, mock.Anything).Return(protocol.MorseRelayResponse{}, relay.RelayLog{}, nil).Times(test.expectedCalls)
+			mocks.mockCache.On("ClearWSRelaysByNodeKeys", mock.Anything).Return(nil).Once()
+
+			err := relayer.SendWSRelays()
+
+			<-time.After(500 * time.Millisecond)
+
+			if test.expectError {
+				c.Error(err)
+			} else {
+				c.NoError(err)
+				mocks.mockRelayer.AssertNumberOfCalls(t, "SendNodeRelay", test.expectedCalls)
+				mocks.mockCache.AssertNumberOfCalls(t, "ClearWSRelaysByNodeKeys", 1)
+				mocks.mockAppInformer.AssertNumberOfCalls(t, "Session", len(test.stakedApps))
+				mocks.mockBackend.AssertNumberOfCalls(t, "GetPortalAppByID", len(test.allWSRelays))
+				mocks.mockBackend.AssertNumberOfCalls(t, "GetChainByID", len(test.allWSRelays))
+			}
+		})
+	}
+}
+
 func Test_Relayer_getRelayGroups(t *testing.T) {
 	tests := []struct {
 		name           string
