@@ -42,26 +42,29 @@ type (
 	wsRelayer struct {
 		protocolID  types.ProtocolID
 		relayer     iRelayer
+		subscriber  iRelaySubscriber
 		cache       iCache
 		backend     iBackend
 		appInformer iAppInformer
-		blockCh     chan struct{}
-		resumeCh    chan struct{}
-		logger      *logger.Logger
+
+		logger *logger.Logger
 	}
 	Config struct {
 		ProtocolID  types.ProtocolID
 		Relayer     iRelayer
+		Subscriber  iRelaySubscriber
 		Cache       iCache
 		Backend     iBackend
-		BlockCh     chan struct{}
-		ResumeCh    chan struct{}
 		AppInformer iAppInformer
 		Logger      *logger.Logger
 	}
 
 	iRelayer interface {
 		SendNodeRelay(request relay.RelayRequest, session sessionpkg.Session, node nodepkg.Node) (protocol.ProtocolResponse, relay.RelayLog, error)
+	}
+	iRelaySubscriber interface {
+		Block()
+		Resume()
 	}
 	iAppInformer interface {
 		StakedApps() (map[informer.StakedApp]types.GigastakeApp, error)
@@ -117,37 +120,36 @@ func NewWSRelayer(config Config) *wsRelayer {
 	return &wsRelayer{
 		protocolID:  config.ProtocolID,
 		relayer:     config.Relayer,
+		subscriber:  config.Subscriber,
 		cache:       config.Cache,
 		backend:     config.Backend,
-		blockCh:     config.BlockCh,
-		resumeCh:    config.ResumeCh,
 		appInformer: config.AppInformer,
 		logger:      config.Logger,
 	}
 }
 
 func (r *wsRelayer) SendWSRelays() error {
-	// send block signal to relay subscriber to block reading from relayCh in messenger until dummy relays are sent
-	r.blockCh <- struct{}{}
-	defer func() {
-		r.resumeCh <- struct{}{}
-	}()
+	// block relayer from saving relays to cache
+	r.subscriber.Block()
+	defer r.subscriber.Resume()
 
+	// get all staked apps from app informer
 	stakedApps, err := r.appInformer.StakedApps()
 	if err != nil {
-		return err
+		return fmt.Errorf("error getting staked apps: %w", err)
 	}
 
 	// get relay groups, which contain relay counts for all nodes with WS relays that are in session
 	relayGroups, err := r.getRelayGroups(stakedApps)
 	if err != nil {
-		return err
+		return fmt.Errorf("error getting relay groups: %w", err)
 	}
 
+	// iterate through relay groups and send the relays to credit nodes
 	for _, rg := range relayGroups {
 		// for each relay group start a new goroutine to send the relays
 		go func(rg relayGroup) {
-			// get all the gigastake apps for the chain as a slice
+			// get all the gigastake apps for the chain
 			protocolApps := rg.RelayRequest.Details.Chain.GetGigastakeAppsByProtocolID(r.protocolID)
 			if len(protocolApps) == 0 {
 				r.logger.Error("no gigastake apps found",
@@ -157,9 +159,9 @@ func (r *wsRelayer) SendWSRelays() error {
 				return
 			}
 
-			maxAttempts, ok := chainToAttemptsMap[rg.RelayRequest.Details.Chain.ID]
-			if !ok {
-				maxAttempts = 2 // default number of attempts if unspecified
+			maxAttempts := 2 // default is 2 relay attempts, can be configured per chain in chainToAttemptsMap
+			if attempts, ok := chainToAttemptsMap[rg.RelayRequest.Details.Chain.ID]; ok {
+				maxAttempts = attempts
 			}
 
 			// send the total count of dummy relays for the relay group
@@ -175,13 +177,15 @@ func (r *wsRelayer) SendWSRelays() error {
 
 				// perform relay with retry
 				for attempt := 0; attempt < maxAttempts; attempt++ {
+
 					// TODO - implement logging/metrics based on response?
 					_, _, err := r.relayer.SendNodeRelay(relayRequest, rg.Session, rg.Node)
 					if err != nil {
 						r.logger.Error("error sending relay", slog.String("err", err.Error()))
 						continue
 					}
-					return
+
+					break
 				}
 			}
 		}(rg)
@@ -189,9 +193,8 @@ func (r *wsRelayer) SendWSRelays() error {
 
 	// clear all node keys from the cache that relays were sent for
 	nodesInSession := relayGroups.getNodeKeys()
-
 	if err := r.cache.ClearWSRelaysByNodeKeys(nodesInSession); err != nil {
-		return err
+		return fmt.Errorf("error clearing websocket relays by node keys: %w", err)
 	}
 
 	return nil

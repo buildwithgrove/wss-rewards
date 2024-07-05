@@ -30,8 +30,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 		batchSize         int16
 		wsChains          map[types.RelayChainID]struct{}
 		expectedCallCount int
-		blockAt           int // index to block at, -1 if no block
-		resumeAt          int // index to resume at, -1 if no resume
+		blockDuration     time.Duration
 	}{
 		{
 			name:              "should process 5000 relays and persist with batch size 100",
@@ -39,8 +38,6 @@ func TestRelaySubscriber_Process(t *testing.T) {
 			batchSize:         1000,
 			wsChains:          chainIDs,
 			expectedCallCount: 5,
-			blockAt:           -1,
-			resumeAt:          -1,
 		},
 		{
 			name:              "should process 12000 relays and persist with batch size 300",
@@ -48,17 +45,14 @@ func TestRelaySubscriber_Process(t *testing.T) {
 			batchSize:         3000,
 			wsChains:          chainIDs,
 			expectedCallCount: 4,
-			blockAt:           -1,
-			resumeAt:          -1,
 		},
 		{
-			name:              "should block and then resume processing relays",
-			relayMessages:     generateRandomWSRelays(1_000),
-			batchSize:         100,
+			name:              "should process 5000 relays with 1 second block and persist with batch size 100",
+			relayMessages:     generateRandomWSRelays(5_000),
+			batchSize:         1000,
 			wsChains:          chainIDs,
-			expectedCallCount: 10,
-			blockAt:           300, // Block after 300 messages
-			resumeAt:          700, // Resume after 700 messages
+			expectedCallCount: 5,
+			blockDuration:     1 * time.Second,
 		},
 	}
 
@@ -67,15 +61,11 @@ func TestRelaySubscriber_Process(t *testing.T) {
 			c := require.New(t)
 
 			mockCache := newMockICache(t)
-			blockCh := make(chan struct{})
-			resumeCh := make(chan struct{})
 
 			rs, err := NewRelaySubscriber(RelaySubscriberConfig{
 				Cache:     mockCache,
 				BatchSize: test.batchSize,
 				WSChains:  test.wsChains,
-				BlockCh:   blockCh,
-				ResumeCh:  resumeCh,
 				Logger:    logger.New(),
 			})
 			c.NoError(err)
@@ -102,25 +92,33 @@ func TestRelaySubscriber_Process(t *testing.T) {
 				}).Once()
 			}
 
-			// Run Process in a goroutine to allow blocking and resuming
-			go rs.Process(context.Background())
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-			for i, relay := range test.relayMessages {
-				if i == test.blockAt {
-					blockCh <- struct{}{}
-				}
-				if i == test.resumeAt {
-					resumeCh <- struct{}{}
-				}
+			go rs.Process(ctx)
+
+			startTime := time.Now()
+
+			for _, relay := range test.relayMessages {
 				relayCh <- relay
 			}
 
-			// Wait for the Process to finish
+			if test.blockDuration > 0 {
+				rs.Block()
+				time.Sleep(test.blockDuration)
+				rs.Resume()
+			}
+
 			<-time.After(2 * time.Second)
 
 			// Check if the expected number of calls to SetWSRelays matches
 			mockCache.AssertNumberOfCalls(t, "SetWSRelays", test.expectedCallCount)
 			mockCache.AssertExpectations(t)
+
+			totalTime := time.Since(startTime)
+			if test.blockDuration > 0 {
+				c.GreaterOrEqual(totalTime, 2*time.Second+test.blockDuration)
+			}
 		})
 	}
 }

@@ -140,11 +140,6 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("error setting up phd client: %v", err))
 	}
-
-	// create channels to block and resume reading relays in relay subscriber
-	blockCh := make(chan struct{})
-	resumeCh := make(chan struct{})
-
 	// init metrics to report relay metrics
 	metricsExporter := metric.NewMetricExporter()
 	relayMetricsExporter := metric.GetReporter(metricsExporter)
@@ -176,8 +171,6 @@ func main() {
 		BatchSize: options.relayBatchSize,
 		WSChains:  options.wsChains,
 		Logger:    logger,
-		BlockCh:   blockCh,
-		ResumeCh:  resumeCh,
 	})
 	if err != nil {
 		panic(fmt.Errorf("error setting up relay subscriber: %v", err))
@@ -224,11 +217,10 @@ func main() {
 	relayer := relayerPkg.NewWSRelayer(relayerPkg.Config{
 		ProtocolID:  types.ProtocolMorseMainnet,
 		Relayer:     portalRelayer,
+		Subscriber:  relaySubscriber,
 		AppInformer: appInformer,
 		Cache:       cache,
 		Backend:     backend,
-		BlockCh:     blockCh,
-		ResumeCh:    resumeCh,
 		Logger:      logger,
 	})
 
