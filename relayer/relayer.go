@@ -23,20 +23,7 @@ const (
 	wsPath    = "/v1/%s"
 )
 
-var (
-	wsRelayBody = fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":"%s"}`, wsRelayID)
-
-	// TODO_IMPROVE: Move this in global env variable configurations that can
-	// be configured based on chainId, appId, userId, etc...
-	// Note: this mitigates but doesn't solve the issue
-	// - All nodes in a session are bad
-	// - No good nodes exist at all
-	// - Attempts exhausted and no good response is found
-	chainToAttemptsMap = map[types.RelayChainID]int{
-		"A001": 5, // POKT Archival MainNet
-		"0001": 5, // POKT non-archival MainNet
-	}
-)
+var wsRelayBody = fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":"%s"}`, wsRelayID)
 
 type (
 	wsRelayer struct {
@@ -159,11 +146,6 @@ func (r *wsRelayer) SendWSRelays() error {
 				return
 			}
 
-			maxAttempts := 2 // default is 2 relay attempts, can be configured per chain in chainToAttemptsMap
-			if attempts, ok := chainToAttemptsMap[rg.RelayRequest.Details.Chain.ID]; ok {
-				maxAttempts = attempts
-			}
-
 			// send the total count of dummy relays for the relay group
 			for i := 0; i < int(rg.Count); i++ {
 				relayRequest := rg.RelayRequest // copy relay request
@@ -175,17 +157,11 @@ func (r *wsRelayer) SendWSRelays() error {
 				// clear gigastake apps from chain once random gigastake app is chosen
 				relayRequest.Details.Chain = relayRequest.Details.Chain.ClearGigastakeApps()
 
-				// perform relay with retry
-				for attempt := 0; attempt < maxAttempts; attempt++ {
-
-					// TODO - implement logging/metrics based on response?
-					_, _, err := r.relayer.SendNodeRelay(relayRequest, rg.Session, rg.Node)
-					if err != nil {
-						r.logger.Error("error sending relay", slog.String("err", err.Error()))
-						continue
-					}
-
-					break
+				// TODO - implement logging/metrics based on response?
+				_, _, err := r.relayer.SendNodeRelay(relayRequest, rg.Session, rg.Node)
+				if err != nil {
+					r.logger.Error("error sending relay", slog.String("err", err.Error()))
+					continue
 				}
 			}
 		}(rg)
