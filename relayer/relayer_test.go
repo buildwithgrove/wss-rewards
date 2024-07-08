@@ -23,36 +23,243 @@ import (
 
 type mocks struct {
 	mockAppInformer *mockIAppInformer
-	mockProtocol    *mockIProtocol
+	mockRelayer     *mockIRelayer
 	mockCache       *mockICache
 	mockBackend     *mockIBackend
+	mockSubscriber  *mockIRelaySubscriber
 }
 
 func newTestRelayer(t *testing.T) (*wsRelayer, mocks) {
 	mockAppInformer := newMockIAppInformer(t)
-	mockProtocol := newMockIProtocol(t)
+	mockRelayer := newMockIRelayer(t)
 	mockCache := newMockICache(t)
 	mockBackend := newMockIBackend(t)
+	mockSubscriber := newMockIRelaySubscriber(t)
 
 	config := Config{
 		ProtocolID:  types.ProtocolMorseMainnet,
-		Protocol:    mockProtocol,
+		Relayer:     mockRelayer,
+		Subscriber:  mockSubscriber,
 		Backend:     mockBackend,
 		Cache:       mockCache,
-		BlockCh:     make(chan struct{}),
-		ResumeCh:    make(chan struct{}),
 		AppInformer: mockAppInformer,
 		Logger:      logger.New(),
 	}
 
 	mocks := mocks{
 		mockAppInformer: mockAppInformer,
-		mockProtocol:    mockProtocol,
+		mockRelayer:     mockRelayer,
 		mockCache:       mockCache,
 		mockBackend:     mockBackend,
+		mockSubscriber:  mockSubscriber,
 	}
 
 	return NewWSRelayer(config), mocks
+}
+
+func Test_Relayer_SendWSRelays(t *testing.T) {
+	tests := []struct {
+		name          string
+		stakedApps    map[informer.StakedApp]types.GigastakeApp
+		allWSRelays   cache.AllWSRelays
+		expectedCalls int
+		expectError   bool
+	}{
+		{
+			name: "should send WS relays correctly",
+			stakedApps: map[informer.StakedApp]types.GigastakeApp{
+				{PublicKey: "test_37a0e8437f5149dc98a9a5b207efc2d0", Chain: "0021"}: *getTestGigastakeApps()["test_gigastake_app_1"],
+				{PublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e", Chain: "0040"}: *getTestGigastakeApps()["test_gigastake_app_3"],
+			},
+			allWSRelays: cache.AllWSRelays{
+				{NodeID: "0021_node_1", ChainID: "0021", PortalAppID: "test_app_1"}: 43,
+				{NodeID: "0040_node_1", ChainID: "0040", PortalAppID: "test_app_1"}: 8,
+				{NodeID: "0040_node_2", ChainID: "0040", PortalAppID: "test_app_2"}: 17,
+			},
+			expectedCalls: 68, // 43 + 8 + 17
+			expectError:   false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			relayer, mocks := newTestRelayer(t)
+
+			mocks.mockSubscriber.On("Block").Return().Once()
+			mocks.mockAppInformer.On("StakedApps").Return(test.stakedApps, nil).Once()
+			mocks.mockCache.On("GetAllWSRelays").Return(test.allWSRelays, nil).Once()
+			for nodeKey := range test.allWSRelays {
+				_, chainID, portalAppID := nodeKey.DecomposeKey()
+				mocks.mockBackend.On("GetPortalAppByID", portalAppID).Return(*getTestPortalAppLites()[portalAppID], nil).Once()
+				mocks.mockBackend.On("GetChainByID", chainID).Return(*getTestChains()[chainID], nil).Once()
+			}
+			for stakedApp := range test.stakedApps {
+				session := getTestSession(stakedApp)
+				mocks.mockAppInformer.On("Session", stakedApp).Return(session, nil).Once()
+			}
+			mocks.mockRelayer.On("SendNodeRelay", mock.Anything, mock.Anything, mock.Anything).Return(protocol.MorseRelayResponse{}, relay.RelayLog{}, nil).Times(test.expectedCalls)
+			mocks.mockCache.On("ClearWSRelaysByNodeKeys", mock.Anything).Return(nil).Once()
+			mocks.mockSubscriber.On("Resume").Return().Once()
+
+			err := relayer.SendWSRelays()
+			<-time.After(500 * time.Millisecond)
+
+			if test.expectError {
+				c.Error(err)
+			} else {
+				c.NoError(err)
+				mocks.mockRelayer.AssertNumberOfCalls(t, "SendNodeRelay", test.expectedCalls)
+				mocks.mockCache.AssertNumberOfCalls(t, "ClearWSRelaysByNodeKeys", 1)
+				mocks.mockAppInformer.AssertNumberOfCalls(t, "Session", len(test.stakedApps))
+				mocks.mockBackend.AssertNumberOfCalls(t, "GetPortalAppByID", len(test.allWSRelays))
+				mocks.mockBackend.AssertNumberOfCalls(t, "GetChainByID", len(test.allWSRelays))
+				mocks.mockSubscriber.AssertNumberOfCalls(t, "Block", 1)
+				mocks.mockSubscriber.AssertNumberOfCalls(t, "Resume", 1)
+			}
+		})
+	}
+}
+
+func Test_Relayer_getRelayGroups(t *testing.T) {
+	tests := []struct {
+		name           string
+		stakedApps     map[informer.StakedApp]types.GigastakeApp
+		allWSRelays    cache.AllWSRelays
+		expectedGroups relayGroups
+		expectError    bool
+	}{
+		{
+			name: "should get relay groups correctly",
+			stakedApps: map[informer.StakedApp]types.GigastakeApp{
+				{PublicKey: "test_37a0e8437f5149dc98a9a5b207efc2d0", Chain: "0021"}: *getTestGigastakeApps()["test_gigastake_app_1"],
+				{PublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e", Chain: "0040"}: *getTestGigastakeApps()["test_gigastake_app_3"],
+			},
+			allWSRelays: cache.AllWSRelays{
+				{NodeID: "0021_node_1", ChainID: "0021", PortalAppID: "test_app_1"}: 43,
+				{NodeID: "0040_node_1", ChainID: "0040", PortalAppID: "test_app_1"}: 8,
+				{NodeID: "0040_node_2", ChainID: "0040", PortalAppID: "test_app_2"}: 17,
+			},
+			expectedGroups: relayGroups{
+				{
+					Count: 43,
+					RelayRequest: relay.RelayRequest{
+						Relays: []relay.Relay{
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
+						},
+						Details: relay.RelayDetails{
+							UserApplication: *getTestPortalAppLites()["test_app_1"],
+							Chain:           *getTestChains()["0021"],
+							Protocol:        types.ProtocolMorseMainnet,
+						},
+						Origin: "wss://eth-mainnet.rpc.grove.city",
+						Method: "POST",
+						Path:   "/v1/test_app_1",
+					},
+					Session: session.MorseSession{
+						Session: provider.Session{
+							Header: provider.SessionHeader{
+								AppPublicKey: "test_37a0e8437f5149dc98a9a5b207efc2d0",
+								Chain:        "0021",
+							},
+							Nodes: getNodesForTestSession(informer.StakedApp{Chain: "0021"}),
+						},
+					},
+					Node: nodepkg.V0Node{
+						ProviderNode: provider.Node{PublicKey: "0021_node_1"},
+					},
+				},
+				{
+					Count: 8,
+					RelayRequest: relay.RelayRequest{
+						Relays: []relay.Relay{
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
+						},
+						Details: relay.RelayDetails{
+							UserApplication: *getTestPortalAppLites()["test_app_1"],
+							Chain:           *getTestChains()["0040"],
+							Protocol:        types.ProtocolMorseMainnet,
+						},
+						Origin: "wss://harmony-0.rpc.grove.city",
+						Method: "POST",
+						Path:   "/v1/test_app_1",
+					},
+					Session: session.MorseSession{
+						Session: provider.Session{
+							Header: provider.SessionHeader{
+								AppPublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e",
+								Chain:        "0040",
+							},
+							Nodes: getNodesForTestSession(informer.StakedApp{Chain: "0040"}),
+						},
+					},
+					Node: nodepkg.V0Node{
+						ProviderNode: provider.Node{PublicKey: "0040_node_1"},
+					},
+				},
+				{
+					Count: 17,
+					RelayRequest: relay.RelayRequest{
+						Relays: []relay.Relay{
+							relay.JsonRelay{RelayData: json.RawMessage(wsRelayBody)},
+						},
+						Details: relay.RelayDetails{
+							UserApplication: *getTestPortalAppLites()["test_app_2"],
+							Chain:           *getTestChains()["0040"],
+							Protocol:        types.ProtocolMorseMainnet,
+						},
+						Origin: "wss://harmony-0.rpc.grove.city",
+						Method: "POST",
+						Path:   "/v1/test_app_2",
+					},
+					Session: session.MorseSession{
+						Session: provider.Session{
+							Header: provider.SessionHeader{
+								AppPublicKey: "test_4f805bbbf96c4a649efc3f4f95616f2e",
+								Chain:        "0040",
+							},
+							Nodes: getNodesForTestSession(informer.StakedApp{Chain: "0040"}),
+						},
+					},
+					Node: nodepkg.V0Node{
+						ProviderNode: provider.Node{PublicKey: "0040_node_2"},
+					},
+				},
+			},
+			expectError: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			relayer, mocks := newTestRelayer(t)
+
+			mocks.mockCache.On("GetAllWSRelays").Return(test.allWSRelays, nil).Once()
+
+			for nodeKey := range test.allWSRelays {
+				_, chainID, portalAppID := nodeKey.DecomposeKey()
+				mocks.mockBackend.On("GetPortalAppByID", portalAppID).Return(*getTestPortalAppLites()[portalAppID], nil).Once()
+				mocks.mockBackend.On("GetChainByID", chainID).Return(*getTestChains()[chainID], nil).Once()
+			}
+
+			for stakedApp := range test.stakedApps {
+				session := getTestSession(stakedApp)
+				mocks.mockAppInformer.On("Session", stakedApp).Return(session, nil).Once()
+			}
+
+			relayGroups, err := relayer.getRelayGroups(test.stakedApps)
+
+			if test.expectError {
+				c.Error(err)
+			} else {
+				c.NoError(err)
+				c.ElementsMatch(test.expectedGroups, relayGroups)
+			}
+		})
+	}
 }
 
 func Test_Relayer_filterAppsForChainsWithRelays(t *testing.T) {
@@ -154,7 +361,7 @@ func Test_Relayer_getSessionData(t *testing.T) {
 				}
 			}
 
-			mocks.mockProtocol.AssertExpectations(t)
+			mocks.mockRelayer.AssertExpectations(t)
 		})
 	}
 }
@@ -843,56 +1050,53 @@ func newMockIBackend(t interface {
 	return mock
 }
 
-// mockIProtocol is an autogenerated mock type for the iProtocol type
-type mockIProtocol struct {
+// mockIRelayer is an autogenerated mock type for the iRelayer type
+type mockIRelayer struct {
 	mock.Mock
 }
 
-// Relay provides a mock function with given fields: relayReq
-func (_m *mockIProtocol) Relay(relayReq protocol.ProtocolRequest) (protocol.ProtocolResponse, protocol.RelayError) {
-	ret := _m.Called(relayReq)
+// SendNodeRelay provides a mock function with given fields: request, _a1, _a2
+func (_m *mockIRelayer) SendNodeRelay(request relay.RelayRequest, _a1 session.Session, _a2 nodepkg.Node) (protocol.ProtocolResponse, relay.RelayLog, error) {
+	ret := _m.Called(request, _a1, _a2)
 
 	if len(ret) == 0 {
-		panic("no return value specified for Relay")
+		panic("no return value specified for SendNodeRelay")
 	}
 
 	var r0 protocol.ProtocolResponse
-	var r1 protocol.RelayError
-	if rf, ok := ret.Get(0).(func(protocol.ProtocolRequest) (protocol.ProtocolResponse, protocol.RelayError)); ok {
-		return rf(relayReq)
+	var r1 relay.RelayLog
+	var r2 error
+	if rf, ok := ret.Get(0).(func(relay.RelayRequest, session.Session, nodepkg.Node) (protocol.ProtocolResponse, relay.RelayLog, error)); ok {
+		return rf(request, _a1, _a2)
 	}
-	if rf, ok := ret.Get(0).(func(protocol.ProtocolRequest) protocol.ProtocolResponse); ok {
-		r0 = rf(relayReq)
+	if rf, ok := ret.Get(0).(func(relay.RelayRequest, session.Session, nodepkg.Node) protocol.ProtocolResponse); ok {
+		r0 = rf(request, _a1, _a2)
 	} else if ret.Get(0) != nil {
 		r0 = ret.Get(0).(protocol.ProtocolResponse)
 	}
 
-	if rf, ok := ret.Get(1).(func(protocol.ProtocolRequest) protocol.RelayError); ok {
-		r1 = rf(relayReq)
+	if rf, ok := ret.Get(1).(func(relay.RelayRequest, session.Session, nodepkg.Node) relay.RelayLog); ok {
+		r1 = rf(request, _a1, _a2)
 	} else {
-		r1 = ret.Get(1).(protocol.RelayError)
+		r1 = ret.Get(1).(relay.RelayLog)
 	}
 
-	return r0, r1
+	if rf, ok := ret.Get(2).(func(relay.RelayRequest, session.Session, nodepkg.Node) error); ok {
+		r2 = rf(request, _a1, _a2)
+	} else {
+		r2 = ret.Error(2)
+	}
+
+	return r0, r1, r2
 }
 
-// Dispatch is just here to satisfy the interface
-func (_m *mockIProtocol) Dispatch(protocol.App) (session.Session, error) {
-	return nil, nil
-}
-
-// GetApps is just here to satisfy the interface
-func (_m *mockIProtocol) GetApps() ([]protocol.App, error) {
-	return nil, nil
-}
-
-// newMockIProtocol creates a new instance of mockIProtocol. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
+// newMockIRelayer creates a new instance of mockIRelayer. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
-func newMockIProtocol(t interface {
+func newMockIRelayer(t interface {
 	mock.TestingT
 	Cleanup(func())
-}) *mockIProtocol {
-	mock := &mockIProtocol{}
+}) *mockIRelayer {
+	mock := &mockIRelayer{}
 	mock.Mock.Test(t)
 
 	t.Cleanup(func() { mock.AssertExpectations(t) })
@@ -968,6 +1172,35 @@ func newMockIAppInformer(t interface {
 	Cleanup(func())
 }) *mockIAppInformer {
 	mock := &mockIAppInformer{}
+	mock.Mock.Test(t)
+
+	t.Cleanup(func() { mock.AssertExpectations(t) })
+
+	return mock
+}
+
+// mockIRelaySubscriber is an autogenerated mock type for the iRelaySubscriber type
+type mockIRelaySubscriber struct {
+	mock.Mock
+}
+
+// Block provides a mock function with given fields:
+func (_m *mockIRelaySubscriber) Block() {
+	_m.Called()
+}
+
+// Resume provides a mock function with given fields:
+func (_m *mockIRelaySubscriber) Resume() {
+	_m.Called()
+}
+
+// newMockIRelaySubscriber creates a new instance of mockIRelaySubscriber. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
+// The first argument is typically a *testing.T value.
+func newMockIRelaySubscriber(t interface {
+	mock.TestingT
+	Cleanup(func())
+}) *mockIRelaySubscriber {
+	mock := &mockIRelaySubscriber{}
 	mock.Mock.Test(t)
 
 	t.Cleanup(func() { mock.AssertExpectations(t) })

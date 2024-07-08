@@ -12,6 +12,7 @@ import (
 	"github.com/pokt-foundation/portal-middleware/informer"
 	"github.com/pokt-foundation/portal-middleware/messaging"
 	"github.com/pokt-foundation/portal-middleware/protocol"
+	"github.com/pokt-foundation/portal-middleware/relay"
 	"github.com/pokt-foundation/request-reporter/messenger"
 	"github.com/pokt-foundation/request-reporter/metric"
 	"github.com/pokt-foundation/utils-go/environment"
@@ -139,11 +140,6 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("error setting up phd client: %v", err))
 	}
-
-	// create channels to block and resume reading relays in relay subscriber
-	blockCh := make(chan struct{})
-	resumeCh := make(chan struct{})
-
 	// init metrics to report relay metrics
 	metricsExporter := metric.NewMetricExporter()
 	relayMetricsExporter := metric.GetReporter(metricsExporter)
@@ -175,8 +171,6 @@ func main() {
 		BatchSize: options.relayBatchSize,
 		WSChains:  options.wsChains,
 		Logger:    logger,
-		BlockCh:   blockCh,
-		ResumeCh:  resumeCh,
 	})
 	if err != nil {
 		panic(fmt.Errorf("error setting up relay subscriber: %v", err))
@@ -198,26 +192,35 @@ func main() {
 		return
 	}
 
-	appInformer, err := informer.NewAppInformer(
-		informer.Options{
-			Config:       options.appInformerConfig,
-			Backend:      backend,
-			Metric:       metricsExporter,
-			PoktProtocol: morseProtocol,
-			Logger:       logger,
-		})
+	appInformer, err := informer.NewAppInformer(informer.Options{
+		Config:       options.appInformerConfig,
+		Backend:      backend,
+		Metric:       metricsExporter,
+		PoktProtocol: morseProtocol,
+		Logger:       logger,
+	})
 	if err != nil {
 		panic(fmt.Errorf("error setting up app informer: %v", err))
 	}
 
+	portalRelayer, err := relay.NewPortalRelayer(
+		morseProtocol,
+		appInformer,
+		nil,
+		logger,
+	)
+	if err != nil {
+		logger.Error("error building portal relayer", slog.String("error", err.Error()))
+		return
+	}
+
 	relayer := relayerPkg.NewWSRelayer(relayerPkg.Config{
 		ProtocolID:  types.ProtocolMorseMainnet,
-		Protocol:    morseProtocol,
+		Relayer:     portalRelayer,
+		Subscriber:  relaySubscriber,
 		AppInformer: appInformer,
 		Cache:       cache,
 		Backend:     backend,
-		BlockCh:     blockCh,
-		ResumeCh:    resumeCh,
 		Logger:      logger,
 	})
 

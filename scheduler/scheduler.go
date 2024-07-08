@@ -39,7 +39,7 @@ func (s *Scheduler) Run() {
 	for range ticker.C {
 		err := s.relayer.SendWSRelays()
 		if err != nil {
-			s.logger.Error("error sending ws relays", "err", err)
+			s.logger.Error("error sending ws relays", slog.String("err", err.Error()))
 		}
 	}
 }

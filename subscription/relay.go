@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/metrics"
@@ -21,8 +22,8 @@ type (
 		cache      ICache
 		batchSize  int16
 		wsChains   map[types.RelayChainID]struct{}
-		blockCh    chan struct{} // Channel to block processing
-		resumeCh   chan struct{} // Channel to resume processing
+		blocked    bool
+		mu         sync.Mutex
 		logger     *slog.Logger
 	}
 
@@ -30,8 +31,6 @@ type (
 		Cache     ICache
 		BatchSize int16
 		WSChains  map[types.RelayChainID]struct{}
-		BlockCh   chan struct{}
-		ResumeCh  chan struct{}
 		Logger    *logger.Logger
 	}
 
@@ -52,8 +51,7 @@ func NewRelaySubscriber(config RelaySubscriberConfig) (*RelaySubscriber, error) 
 		relayBatch: make([]relayMetadata, 0, config.BatchSize),
 		batchSize:  config.BatchSize,
 		wsChains:   config.WSChains,
-		blockCh:    config.BlockCh,
-		resumeCh:   config.ResumeCh,
+		mu:         sync.Mutex{},
 		logger:     config.Logger.With("subscriber", "relay"),
 	}, nil
 }
@@ -70,18 +68,14 @@ func (rs *RelaySubscriber) Subscribe(m iMessenger) error {
 // TODO - should Process be called in a worker pool as in R2 or is one goroutine sufficient?
 func (rs *RelaySubscriber) Process(ctx context.Context) {
 	for {
+		// if the blocked bool is true, don't read relays from relayCh
+		// this is used to ensure relays are not written to the cache while the relayer is sending relays
+		if rs.blocked {
+			continue
+		}
+
 		select {
-		case <-rs.blockCh:
-			rs.logger.Info("blocking relay subscriber processing to send dummy relays")
-			<-rs.resumeCh
-			rs.logger.Info("resuming relay subscriber processing after sending dummy relays")
-
-		case relay, ok := <-rs.relayCh:
-			if !ok {
-				rs.logger.Error("relay channel closed, exiting relay subscriber")
-				return
-			}
-
+		case relay := <-rs.relayCh:
 			// Only the websocket chains specified in the config are processed
 			if _, relayIsWS := rs.wsChains[relay.PoktChainID]; !relayIsWS {
 				continue
@@ -105,6 +99,10 @@ func (rs *RelaySubscriber) Process(ctx context.Context) {
 				// Clear the batch
 				rs.relayBatch = rs.relayBatch[:0]
 			}
+
+		case <-ctx.Done():
+			rs.logger.Info("context cancelled, exiting relay subscriber")
+			return
 		}
 	}
 }
@@ -143,6 +141,18 @@ func (rs *RelaySubscriber) persistWSRelays() error {
 	}
 
 	return nil
+}
+
+func (rs *RelaySubscriber) Block() {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.blocked = true
+}
+
+func (rs *RelaySubscriber) Resume() {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.blocked = false
 }
 
 func (rs *RelaySubscriber) Dispose() error {
