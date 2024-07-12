@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	_ "net/http/pprof"
+
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/backend"
 	"github.com/pokt-foundation/portal-middleware/informer"
@@ -128,6 +130,10 @@ func checkPHD(baseURL string) {
 }
 
 func main() {
+	go func() {
+		fmt.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
 	options := gatherOptions()
 
 	logger := logger.New()

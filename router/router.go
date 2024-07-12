@@ -11,6 +11,8 @@ import (
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-rewards/cache"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type (
@@ -98,6 +100,9 @@ func newAPIRouter(config Config) *wsRouter {
 
 	// GET /relays - handleGetWSRelays returns all the websockets relays
 	wr.mux.HandleFunc("GET /relays", methodCheckMiddleware(wr.authMiddleware(wr.handleGetWSRelays)))
+
+	// GET /metrics - provides metrics data to grafana
+	wr.mux.Handle("GET /metrics", promhttp.Handler())
 
 	return wr
 }
