@@ -11,6 +11,7 @@ require (
 	github.com/pokt-foundation/portal-middleware v0.0.293
 	github.com/pokt-foundation/request-reporter v0.18.0
 	github.com/pokt-foundation/utils-go v0.11.1
+	github.com/prometheus/client_golang v1.18.0
 	github.com/stretchr/testify v1.9.0
 )
 
@@ -162,7 +163,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/pokt-network/poktroll v0.0.3-0.20240531080249-488c0d2502c5 // indirect
 	github.com/pokt-network/smt v0.10.2 // indirect
-	github.com/prometheus/client_golang v1.18.0 // indirect
 	github.com/prometheus/client_model v0.6.0 // indirect
 	github.com/prometheus/common v0.47.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect
