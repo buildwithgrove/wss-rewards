@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/pokt-foundation/portal-middleware/metrics"
+	"github.com/pokt-foundation/request-reporter/messenger"
 	"github.com/pokt-foundation/utils-go/logger"
 )
 
@@ -18,6 +19,9 @@ type (
 
 	iMessenger interface {
 		RelaysChannel() <-chan metrics.Relay
+		// TODO_REMOVE - this is a temporary hack to avoid the relay channel filling up and blocking the messenger
+		// Remove when more robust fix is implemented in R2 messenger package
+		MeterRelaysChannel() <-chan messenger.MeterRelay
 		Close()
 	}
 

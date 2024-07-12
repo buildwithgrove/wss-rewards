@@ -182,7 +182,11 @@ func main() {
 		panic(fmt.Errorf("error setting up relay subscriber: %v", err))
 	}
 
-	subs := []subscription.Subscriber{relaySubscriber}
+	// TODO_REMOVE - this is a temporary hack to avoid the relay channel filling up and blocking the messenger
+	// Remove when more robust fix is implemented in R2 messenger package
+	meterSubscriber := &subscription.MeterSubscriber{}
+
+	subs := []subscription.Subscriber{relaySubscriber, meterSubscriber}
 
 	if err = sub.StartSubscribers(subs); err != nil {
 		panic(fmt.Errorf("starting subscriber error: %v", err))
