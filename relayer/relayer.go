@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"time"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/informer"
@@ -15,6 +16,7 @@ import (
 	sessionpkg "github.com/pokt-foundation/portal-middleware/session"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-rewards/cache"
+	"github.com/pokt-foundation/wss-rewards/metrics"
 )
 
 const (
@@ -33,8 +35,8 @@ type (
 		cache       iCache
 		backend     iBackend
 		appInformer iAppInformer
-
-		logger *logger.Logger
+		metrics     *metrics.MetricExporter
+		logger      *logger.Logger
 	}
 	Config struct {
 		ProtocolID  types.ProtocolID
@@ -43,6 +45,7 @@ type (
 		Cache       iCache
 		Backend     iBackend
 		AppInformer iAppInformer
+		Metrics     *metrics.MetricExporter
 		Logger      *logger.Logger
 	}
 
@@ -111,6 +114,7 @@ func NewWSRelayer(config Config) *wsRelayer {
 		cache:       config.Cache,
 		backend:     config.Backend,
 		appInformer: config.AppInformer,
+		metrics:     config.Metrics,
 		logger:      config.Logger,
 	}
 }
@@ -136,6 +140,8 @@ func (r *wsRelayer) SendWSRelays() error {
 	for _, rg := range relayGroups {
 		// for each relay group start a new goroutine to send the relays
 		go func(rg relayGroup) {
+			r.metrics.IncRelayGroupStart(time.Now(), rg.Count, rg.Session.Key(), rg.Session.AppID(), rg.Node.ID(), rg.RelayRequest.Details.UserApplication.ID, rg.RelayRequest.Details.Chain.ID)
+
 			// get all the gigastake apps for the chain
 			protocolApps := rg.RelayRequest.Details.Chain.GetGigastakeAppsByProtocolID(r.protocolID)
 			if len(protocolApps) == 0 {
@@ -143,8 +149,11 @@ func (r *wsRelayer) SendWSRelays() error {
 					slog.String("chainID", string(rg.RelayRequest.Details.Chain.ID)),
 					slog.String("protocolID", string(r.protocolID)),
 				)
+				r.metrics.IncRelayGroupError(time.Now(), rg.Count, rg.Session.Key(), rg.Session.AppID(), rg.Node.ID(), rg.RelayRequest.Details.UserApplication.ID, rg.RelayRequest.Details.Chain.ID, "no gigastake apps found")
 				return
 			}
+
+			// TODO - select app by pub key of relay grou psession, not randomly
 
 			// send the total count of dummy relays for the relay group
 			for i := 0; i < int(rg.Count); i++ {
@@ -152,24 +161,30 @@ func (r *wsRelayer) SendWSRelays() error {
 
 				// select random gigastake app from chain per relay
 				randomGigastakeApp := protocolApps[rand.Intn(len(protocolApps))]
+				// TODO - select app by pub key of relay group session, not randomly
 				relayRequest.Details.GigastakeApp = randomGigastakeApp
 
 				// clear gigastake apps from chain once random gigastake app is chosen
 				relayRequest.Details.Chain = relayRequest.Details.Chain.ClearGigastakeApps()
 
-				// TODO - implement logging/metrics based on response?
-				_, _, err := r.relayer.SendNodeRelay(relayRequest, rg.Session, rg.Node)
+				resp, relayLog, err := r.relayer.SendNodeRelay(relayRequest, rg.Session, rg.Node)
 				if err != nil {
 					r.logger.Error("error sending relay", slog.String("err", err.Error()))
+					r.metrics.IncRelayError(time.Now(), rg.Session.Key(), rg.Session.AppID(), string(rg.Node.ID()), err.Error())
 					continue
 				}
+
+				r.metrics.IncRelaySuccess(time.Now(), relayLog.SessionKey, resp.AppPublicKey(), resp.NodePublicKey(), resp.StatusCode())
 			}
+
+			r.metrics.IncRelayGroupSuccess(time.Now(), rg.Count, rg.Session.Key(), rg.Session.AppID(), rg.Node.ID(), rg.RelayRequest.Details.UserApplication.ID, rg.RelayRequest.Details.Chain.ID)
 		}(rg)
 	}
 
 	// clear all node keys from the cache that relays were sent for
 	nodesInSession := relayGroups.getNodeKeys()
 	if err := r.cache.ClearWSRelaysByNodeKeys(nodesInSession); err != nil {
+		r.metrics.IncClearCacheError(time.Now(), len(nodesInSession), err.Error())
 		return fmt.Errorf("error clearing websocket relays by node keys: %w", err)
 	}
 

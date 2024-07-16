@@ -7,18 +7,20 @@ import (
 	"testing"
 	"time"
 
+	mock "github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+
 	"github.com/pokt-foundation/pocket-go/provider"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/informer"
+	exporterMocks "github.com/pokt-foundation/portal-middleware/metrics/exporter/mocks"
 	nodepkg "github.com/pokt-foundation/portal-middleware/node"
 	"github.com/pokt-foundation/portal-middleware/protocol"
 	"github.com/pokt-foundation/portal-middleware/relay"
 	"github.com/pokt-foundation/portal-middleware/session"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-rewards/cache"
-
-	mock "github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
+	"github.com/pokt-foundation/wss-rewards/metrics"
 )
 
 type mocks struct {
@@ -43,6 +45,7 @@ func newTestRelayer(t *testing.T) (*wsRelayer, mocks) {
 		Backend:     mockBackend,
 		Cache:       mockCache,
 		AppInformer: mockAppInformer,
+		Metrics:     &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 		Logger:      logger.New(),
 	}
 

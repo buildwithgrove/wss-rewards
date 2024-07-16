@@ -4,8 +4,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pokt-foundation/utils-go/logger"
 	mock "github.com/stretchr/testify/mock"
+
+	exporterMocks "github.com/pokt-foundation/portal-middleware/metrics/exporter/mocks"
+	"github.com/pokt-foundation/utils-go/logger"
+	"github.com/pokt-foundation/wss-rewards/metrics"
 )
 
 func TestScheduler_Run(t *testing.T) {
@@ -37,6 +40,7 @@ func TestScheduler_Run(t *testing.T) {
 			scheduler := NewScheduler(Config{
 				Relayer:  mockRelayer,
 				Interval: test.tickInterval,
+				Metrics:  &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 				Logger:   logger.New(),
 			})
 
