@@ -7,26 +7,28 @@ import (
 	"testing"
 	"time"
 
+	mock "github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+
 	"github.com/pokt-foundation/pocket-go/provider"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
-	"github.com/pokt-foundation/portal-middleware/metrics"
+	gMetrics "github.com/pokt-foundation/portal-middleware/metrics"
+	exporterMocks "github.com/pokt-foundation/portal-middleware/metrics/exporter/mocks"
 	"github.com/pokt-foundation/portal-middleware/node"
 	"github.com/pokt-foundation/portal-middleware/relay"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-rewards/cache"
-
-	mock "github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
+	"github.com/pokt-foundation/wss-rewards/metrics"
 )
 
 var chainIDs = map[types.RelayChainID]struct{}{
-	"W000": {}, "W001": {}, "W002": {}, "W003": {}, "W004": {}, "W005": {}, "W006": {}, "W007": {}, "W008": {},
+	"E000": {}, "E001": {}, "E002": {}, "E003": {}, "E004": {}, "E005": {}, "E006": {}, "E007": {}, "E008": {},
 }
 
 func TestRelaySubscriber_Process(t *testing.T) {
 	tests := []struct {
 		name              string
-		relayMessages     []metrics.Relay
+		relayMessages     []gMetrics.Relay
 		batchSize         int16
 		wsChains          map[types.RelayChainID]struct{}
 		expectedCallCount int
@@ -66,11 +68,12 @@ func TestRelaySubscriber_Process(t *testing.T) {
 				Cache:     mockCache,
 				BatchSize: test.batchSize,
 				WSChains:  test.wsChains,
+				Metrics:   &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 				Logger:    logger.New(),
 			})
 			c.NoError(err)
 
-			relayCh := make(chan metrics.Relay, len(test.relayMessages))
+			relayCh := make(chan gMetrics.Relay, len(test.relayMessages))
 			defer close(relayCh)
 
 			rs.relayCh = relayCh
@@ -123,7 +126,7 @@ func TestRelaySubscriber_Process(t *testing.T) {
 	}
 }
 
-func generateRandomWSRelays(n int) []metrics.Relay {
+func generateRandomWSRelays(n int) []gMetrics.Relay {
 	nodes := make([]node.V0Node, 5)
 	for i := range nodes {
 		nodes[i] = node.V0Node{
@@ -133,7 +136,7 @@ func generateRandomWSRelays(n int) []metrics.Relay {
 
 	chains := make([]types.RelayChainID, 9)
 	for i := range chains {
-		chains[i] = types.RelayChainID(fmt.Sprintf("W00%d", i))
+		chains[i] = types.RelayChainID(fmt.Sprintf("E00%d", i))
 	}
 
 	apps := make([]types.PortalAppLite, 8)
@@ -141,19 +144,19 @@ func generateRandomWSRelays(n int) []metrics.Relay {
 		apps[i] = types.PortalAppLite{ID: types.PortalAppID(fmt.Sprintf("app_%d", i))}
 	}
 
-	metadata := make([]metrics.Relay, n)
+	metadata := make([]gMetrics.Relay, n)
 	for i := 0; i < n; i++ {
-		metadata[i] = metrics.Relay{
+		metadata[i] = gMetrics.Relay{
 			PoktNodePublicKey: string(nodes[rand.Intn(len(nodes))].ID()),
 			PoktChainID:       chains[rand.Intn(len(chains))],
-			RelayRequest:      metrics.RelayRequest{Details: relay.RelayDetails{UserApplication: apps[rand.Intn(len(apps))]}},
+			RelayRequest:      gMetrics.RelayRequest{Details: relay.RelayDetails{UserApplication: apps[rand.Intn(len(apps))]}},
 		}
 	}
 
 	return metadata
 }
 
-func generateExpectedRelaysMap(relays []metrics.Relay) map[cache.NodeKey]int64 {
+func generateExpectedRelaysMap(relays []gMetrics.Relay) map[cache.NodeKey]int64 {
 	expectedRelaysMap := make(map[cache.NodeKey]int64)
 	for _, relay := range relays {
 		key := cache.NodeKey{

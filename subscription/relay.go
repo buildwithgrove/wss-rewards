@@ -5,25 +5,28 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
-	"github.com/pokt-foundation/portal-middleware/metrics"
+	gMetrics "github.com/pokt-foundation/portal-middleware/metrics"
 	"github.com/pokt-foundation/portal-middleware/node"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-rewards/cache"
+	"github.com/pokt-foundation/wss-rewards/metrics"
 )
 
 const retries = 3
 
 type (
 	RelaySubscriber struct {
-		relayCh    <-chan metrics.Relay
+		relayCh    <-chan gMetrics.Relay
 		relayBatch []relayMetadata
 		cache      ICache
 		batchSize  int16
 		wsChains   map[types.RelayChainID]struct{}
 		blocked    bool
 		mu         sync.Mutex
+		metrics    *metrics.MetricExporter
 		logger     *slog.Logger
 	}
 
@@ -31,6 +34,7 @@ type (
 		Cache     ICache
 		BatchSize int16
 		WSChains  map[types.RelayChainID]struct{}
+		Metrics   *metrics.MetricExporter
 		Logger    *logger.Logger
 	}
 
@@ -52,6 +56,7 @@ func NewRelaySubscriber(config RelaySubscriberConfig) (*RelaySubscriber, error) 
 		batchSize:  config.BatchSize,
 		wsChains:   config.WSChains,
 		mu:         sync.Mutex{},
+		metrics:    config.Metrics,
 		logger:     config.Logger.With("subscriber", "relay"),
 	}, nil
 }
@@ -94,6 +99,7 @@ func (rs *RelaySubscriber) Process(ctx context.Context) {
 				}
 				if err != nil {
 					rs.logger.Error(fmt.Sprintf("cache write failed after %d retries: %s", retries, err.Error()))
+					rs.metrics.IncPersistRelayError(time.Now(), err.Error())
 				}
 
 				// Clear the batch
@@ -107,7 +113,7 @@ func (rs *RelaySubscriber) Process(ctx context.Context) {
 	}
 }
 
-func relayToMetadata(relay metrics.Relay) relayMetadata {
+func relayToMetadata(relay gMetrics.Relay) relayMetadata {
 	return relayMetadata{
 		NodeID:      node.ID(relay.PoktNodePublicKey),
 		PortalAppID: relay.RelayRequest.Details.UserApplication.ID,

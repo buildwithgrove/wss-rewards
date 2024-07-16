@@ -21,6 +21,7 @@ import (
 	"github.com/pokt-foundation/utils-go/logger"
 
 	"github.com/pokt-foundation/wss-rewards/cache"
+	"github.com/pokt-foundation/wss-rewards/metrics"
 	relayerPkg "github.com/pokt-foundation/wss-rewards/relayer"
 	"github.com/pokt-foundation/wss-rewards/router"
 	"github.com/pokt-foundation/wss-rewards/scheduler"
@@ -138,6 +139,9 @@ func main() {
 
 	logger := logger.New()
 
+	// init metric exporter and register all metrics
+	metricExporter := metrics.NewMetricExporter()
+
 	// check if Portal HTTP DB is up and running
 	checkPHD(options.backendConfig.PHDBackendConfig.BaseURL)
 
@@ -176,6 +180,7 @@ func main() {
 		Cache:     cache,
 		BatchSize: options.relayBatchSize,
 		WSChains:  options.wsChains,
+		Metrics:   metricExporter,
 		Logger:    logger,
 	})
 	if err != nil {
@@ -231,6 +236,7 @@ func main() {
 		AppInformer: appInformer,
 		Cache:       cache,
 		Backend:     backend,
+		Metrics:     metricExporter,
 		Logger:      logger,
 	})
 
@@ -238,6 +244,7 @@ func main() {
 	scheduler := scheduler.NewScheduler(scheduler.Config{
 		Relayer:  relayer,
 		Interval: options.schedulerInterval,
+		Metrics:  metricExporter,
 		Logger:   logger,
 	})
 
